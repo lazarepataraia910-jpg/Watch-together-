@@ -1,3 +1,5 @@
+try { process.loadEnvFile(); } catch {} // loads .env locally if present; on Render env vars are injected directly
+
 const express = require('express');
 const http = require('http');
 const path = require('path');
@@ -5,6 +7,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -151,7 +156,7 @@ app.post('/api/login', (req, res) => {
   }
   const identifier = username.trim().toLowerCase();
   const user = users.find((u) => u.usernameLower === identifier || (u.emailLower && u.emailLower === identifier));
-  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+  if (!user || !user.passwordHash || !bcrypt.compareSync(password, user.passwordHash)) {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
   }
   const token = crypto.randomBytes(24).toString('hex');
@@ -170,6 +175,92 @@ app.post('/api/logout', (req, res) => {
   }
   clearSessionCookie(res);
   res.json({ ok: true });
+});
+
+// ---------- Google sign-in ----------
+function requestBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol;
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  return `${proto}://${host}`;
+}
+
+app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID) return res.redirect('/login.html?error=GOOGLE_NOT_CONFIGURED');
+  const redirectUri = `${requestBaseUrl(req)}/api/auth/google/callback`;
+  const state = crypto.randomBytes(16).toString('hex');
+  res.setHeader('Set-Cookie', `oauth_state=${state}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax`);
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    prompt: 'select_account',
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.redirect('/login.html?error=GOOGLE_NOT_CONFIGURED');
+  const { code, state } = req.query;
+  const cookies = parseCookieHeader(req.headers.cookie);
+  if (typeof code !== 'string' || !state || state !== cookies['oauth_state']) {
+    return res.redirect('/login.html?error=GOOGLE_AUTH_FAILED');
+  }
+  try {
+    const redirectUri = `${requestBaseUrl(req)}/api/auth/google/callback`;
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) throw new Error('token exchange failed');
+
+    const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const profile = await profileRes.json();
+    if (!profile.email) throw new Error('no email in profile');
+
+    const emailLower = profile.email.toLowerCase();
+    let user = users.find((u) => u.emailLower === emailLower);
+    if (!user) {
+      let base = (profile.name || profile.email.split('@')[0]).replace(/[^a-zA-Z0-9_Ⴀ-ჿ]/g, '').slice(0, 20);
+      if (base.length < 3) base = (base || 'user').padEnd(3, '0');
+      let candidate = base;
+      let n = 1;
+      while (users.some((u) => u.usernameLower === candidate.toLowerCase())) {
+        candidate = (base + n).slice(0, 20);
+        n++;
+      }
+      user = {
+        id: crypto.randomUUID(),
+        username: candidate,
+        usernameLower: candidate.toLowerCase(),
+        email: profile.email,
+        emailLower,
+        passwordHash: null,
+        createdAt: Date.now(),
+      };
+      users.push(user);
+      saveJSON(USERS_FILE, users);
+    }
+
+    const token = crypto.randomBytes(24).toString('hex');
+    sessions.set(token, user.id);
+    saveSessions();
+    setSessionCookie(res, token);
+    res.redirect('/index.html');
+  } catch {
+    res.redirect('/login.html?error=GOOGLE_AUTH_FAILED');
+  }
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
