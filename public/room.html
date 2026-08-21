@@ -22,6 +22,13 @@
       <div class="player-placeholder" id="playerPlaceholder">ვიდეო ჯერ არ არის დამატებული</div>
     </div>
 
+    <div class="viewer-controls hidden" id="viewerControls">
+      <button class="btn btn-ghost btn-sm" id="muteBtn" type="button">🔊</button>
+      <input type="range" id="volumeSlider" min="0" max="100" value="100">
+      <select id="qualitySelect" class="hidden"></select>
+      <button class="btn btn-ghost btn-sm" id="fullscreenBtn" type="button">⛶ სრულ ეკრანზე</button>
+    </div>
+
     <div class="owner-bar hidden" id="ownerBar">
       <input type="url" id="videoUrlInput" placeholder="ჩასვი YouTube, Twitch ან პირდაპირი .mp4 ბმული">
       <button class="btn btn-primary" id="loadVideoBtn">ჩატვირთვა</button>
@@ -95,6 +102,105 @@ const syncHint = document.getElementById('syncHint');
 const shareHint = document.getElementById('shareHint');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
 
+// ---------- Viewer controls (non-admins): volume, quality, fullscreen — never play/pause/seek ----------
+const viewerControls = document.getElementById('viewerControls');
+const muteBtn = document.getElementById('muteBtn');
+const volumeSlider = document.getElementById('volumeSlider');
+const qualitySelect = document.getElementById('qualitySelect');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+
+function updateViewerControlsVisibility() {
+  const show = !canControl && (currentSourceType === 'youtube' || currentSourceType === 'twitch' || currentSourceType === 'file');
+  viewerControls.classList.toggle('hidden', !show);
+}
+
+function refreshMuteIcon(muted) {
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+}
+
+function populateQualitySelect(levels, current) {
+  if (!levels || !levels.length) {
+    qualitySelect.classList.add('hidden');
+    return;
+  }
+  qualitySelect.innerHTML = '';
+  levels.forEach((q) => {
+    const opt = document.createElement('option');
+    opt.value = q;
+    opt.textContent = q;
+    if (q === current) opt.selected = true;
+    qualitySelect.appendChild(opt);
+  });
+  qualitySelect.classList.remove('hidden');
+}
+
+function setupViewerControlsForYouTube() {
+  updateViewerControlsVisibility();
+  if (canControl || !ytPlayer) return;
+  refreshMuteIcon(ytPlayer.isMuted());
+  volumeSlider.value = ytPlayer.getVolume();
+  const levels = ytPlayer.getAvailableQualityLevels ? ytPlayer.getAvailableQualityLevels() : [];
+  populateQualitySelect(levels, ytPlayer.getPlaybackQuality ? ytPlayer.getPlaybackQuality() : null);
+}
+
+function setupViewerControlsForTwitch() {
+  updateViewerControlsVisibility();
+  if (canControl || !twitchPlayer) return;
+  refreshMuteIcon(twitchPlayer.getMuted());
+  volumeSlider.value = Math.round((twitchPlayer.getVolume() || 0) * 100);
+  const qualities = twitchPlayer.getQualities ? twitchPlayer.getQualities() : [];
+  const names = qualities.map((q) => (q && (q.group || q.name)) || q).filter(Boolean);
+  populateQualitySelect(names, twitchPlayer.getQuality ? twitchPlayer.getQuality() : null);
+}
+
+function setupViewerControlsForFile() {
+  updateViewerControlsVisibility();
+  qualitySelect.classList.add('hidden');
+  if (canControl || !fileVideoEl) return;
+  refreshMuteIcon(fileVideoEl.muted);
+  volumeSlider.value = Math.round((fileVideoEl.volume == null ? 1 : fileVideoEl.volume) * 100);
+}
+
+muteBtn.addEventListener('click', () => {
+  if (currentSourceType === 'youtube' && ytPlayer) {
+    const nowMuted = !ytPlayer.isMuted();
+    if (nowMuted) ytPlayer.mute(); else ytPlayer.unMute();
+    refreshMuteIcon(nowMuted);
+  } else if (currentSourceType === 'twitch' && twitchPlayer) {
+    const nowMuted = !twitchPlayer.getMuted();
+    twitchPlayer.setMuted(nowMuted);
+    refreshMuteIcon(nowMuted);
+  } else if (currentSourceType === 'file' && fileVideoEl) {
+    fileVideoEl.muted = !fileVideoEl.muted;
+    refreshMuteIcon(fileVideoEl.muted);
+  }
+});
+
+volumeSlider.addEventListener('input', () => {
+  const v = Number(volumeSlider.value);
+  if (currentSourceType === 'youtube' && ytPlayer) {
+    ytPlayer.setVolume(v);
+    if (v > 0 && ytPlayer.isMuted()) { ytPlayer.unMute(); refreshMuteIcon(false); }
+  } else if (currentSourceType === 'twitch' && twitchPlayer) {
+    twitchPlayer.setVolume(v / 100);
+    if (v > 0 && twitchPlayer.getMuted()) { twitchPlayer.setMuted(false); refreshMuteIcon(false); }
+  } else if (currentSourceType === 'file' && fileVideoEl) {
+    fileVideoEl.volume = v / 100;
+    if (v > 0 && fileVideoEl.muted) { fileVideoEl.muted = false; refreshMuteIcon(false); }
+  }
+});
+
+qualitySelect.addEventListener('change', () => {
+  const q = qualitySelect.value;
+  if (currentSourceType === 'youtube' && ytPlayer && ytPlayer.setPlaybackQuality) ytPlayer.setPlaybackQuality(q);
+  else if (currentSourceType === 'twitch' && twitchPlayer && twitchPlayer.setQuality) twitchPlayer.setQuality(q);
+});
+
+fullscreenBtn.addEventListener('click', () => {
+  const req = playerFrame.requestFullscreen || playerFrame.webkitRequestFullscreen;
+  if (req) req.call(playerFrame);
+});
+
 function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str;
@@ -148,6 +254,7 @@ function destroyPlayer() {
   twitchPlayer = null;
   fileVideoEl = null;
   playerFrame.innerHTML = '';
+  viewerControls.classList.add('hidden');
 }
 
 function loadYouTubeApiIfNeeded() {
@@ -173,16 +280,18 @@ function loadYouTubeApiIfNeeded() {
 function buildYouTubePlayer(videoId, initialVideoState) {
   destroyPlayer();
   currentSourceType = 'youtube';
+  updateViewerControlsVisibility();
   const holder = document.createElement('div');
   holder.id = 'ytHolder';
   playerFrame.appendChild(holder);
 
   ytPlayer = new YT.Player('ytHolder', {
     videoId,
-    playerVars: { autoplay: 0, playsinline: 1, controls: 1, fs: 1 },
+    playerVars: { autoplay: 0, playsinline: 1, controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1, fs: canControl ? 1 : 0 },
     events: {
       onReady: () => {
         applyRemoteVideoState(initialVideoState, true);
+        setupViewerControlsForYouTube();
       },
       onStateChange: (e) => {
         if (!canControl || applyingRemote) return;
@@ -221,8 +330,10 @@ function loadTwitchApiIfNeeded() {
 function buildTwitchPlayer(parsed, initialVideoState) {
   destroyPlayer();
   currentSourceType = 'twitch';
+  updateViewerControlsVisibility();
   const holder = document.createElement('div');
   holder.id = 'twitchHolder';
+  holder.style.position = 'relative';
   playerFrame.appendChild(holder);
 
   const options = { width: '100%', height: '100%', parent: [window.location.hostname], autoplay: false };
@@ -231,8 +342,18 @@ function buildTwitchPlayer(parsed, initialVideoState) {
 
   twitchPlayer = new Twitch.Player('twitchHolder', options);
 
+  // Twitch's embed has no option to hide its native controls, so for non-admins we
+  // block all pointer interaction with the iframe and drive it only through our own
+  // viewer-controls bar (mute/volume/quality/fullscreen), which uses the JS API directly.
+  if (!canControl) {
+    const blocker = document.createElement('div');
+    blocker.className = 'twitch-click-blocker';
+    holder.appendChild(blocker);
+  }
+
   twitchPlayer.addEventListener(Twitch.Player.READY, () => {
     if (parsed.type === 'twitch-vod') applyRemoteVideoState(initialVideoState, true);
+    setupViewerControlsForTwitch();
   });
   if (parsed.type === 'twitch-vod') {
     twitchPlayer.addEventListener(Twitch.Player.PLAY, () => {
@@ -249,14 +370,18 @@ function buildTwitchPlayer(parsed, initialVideoState) {
 function buildFilePlayer(url, initialVideoState) {
   destroyPlayer();
   currentSourceType = 'file';
+  updateViewerControlsVisibility();
   const video = document.createElement('video');
   video.src = url;
-  video.controls = true;
+  video.controls = canControl;
   fileVideoEl = video;
   playerFrame.appendChild(video);
 
   video.addEventListener('error', () => {
     showPlayerError('ვიდეოს ბმული ვერ ჩაიტვირთა — დარწმუნდი, რომ ეს პირდაპირი .mp4 ბმულია.');
+  });
+  video.addEventListener('loadedmetadata', () => {
+    setupViewerControlsForFile();
   });
   video.addEventListener('play', () => {
     if (!canControl || applyingRemote) return;
@@ -444,6 +569,7 @@ function updateControlUi() {
   syncHint.textContent = canControl
     ? (isOwner ? 'შენ ხარ მფლობელი.' : 'შენ ხარ ადმინი.')
     : 'დაკვრას მართავენ ადმინები.';
+  updateViewerControlsVisibility();
 }
 
 socket.on('room:init', (data) => {

@@ -533,11 +533,33 @@ input::placeholder {
   border: none;
 }
 
+.twitch-click-blocker {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: transparent;
+}
+
 .player-placeholder {
   color: var(--text-muted);
   text-align: center;
   padding: 30px;
   font-size: 14px;
+}
+
+.viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+}
+.viewer-controls #volumeSlider {
+  width: 120px;
+  accent-color: var(--accent);
+}
+.viewer-controls #qualitySelect {
+  width: auto;
+  padding: 7px 10px;
 }
 
 .owner-bar {
