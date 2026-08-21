@@ -18,26 +18,42 @@
 
 <div class="page">
   <div class="grid-2">
-    <div class="card">
-      <h2>ოთახის შექმნა
-        <span class="sub">დაარქვი სახელი, დააწესე პაროლი — მეგობრები იპოვიან და პაროლით შემოვლენ</span>
-      </h2>
-      <div id="createError" class="error-box hidden"></div>
-      <form id="createForm">
-        <div class="field">
-          <label for="roomName">ოთახის სახელი</label>
-          <input type="text" id="roomName" placeholder="მაგ. კინოსერანტი პარასკევს" required>
+    <div class="card-stack">
+      <div class="card">
+        <h2>ოთახის შექმნა
+          <span class="sub">დაარქვი სახელი, დააწესე პაროლი — მეგობრები იპოვიან და პაროლით შემოვლენ</span>
+        </h2>
+        <div id="createError" class="error-box hidden"></div>
+        <form id="createForm">
+          <div class="field">
+            <label for="roomName">ოთახის სახელი</label>
+            <input type="text" id="roomName" placeholder="მაგ. კინოსერანტი პარასკევს" required>
+          </div>
+          <div class="field">
+            <label for="roomPassword">პაროლი</label>
+            <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
+          </div>
+          <div class="field">
+            <label for="roomVideo">ვიდეოს ბმული <span style="font-weight:400">(არასავალდებულო, მოგვიანებითაც დაემატება)</span></label>
+            <input type="url" id="roomVideo" placeholder="YouTube, Twitch ან პირდაპირი .mp4 ბმული">
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" id="createSubmit">ოთახის შექმნა</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>მეგობრები
+          <span class="sub">დაამატე მეგობარი მისი ელფოსტით — მას აქ დაინახავ ყოველთვის</span>
+        </h2>
+        <div id="friendError" class="error-box hidden"></div>
+        <form id="addFriendForm" class="search-row">
+          <input type="email" id="friendEmail" placeholder="მეგობრის ელფოსტა" required>
+          <button type="submit" class="btn btn-primary" id="addFriendSubmit">დამატება</button>
+        </form>
+        <div class="friend-list" id="friendList">
+          <div class="empty-state">იტვირთება…</div>
         </div>
-        <div class="field">
-          <label for="roomPassword">პაროლი</label>
-          <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
-        </div>
-        <div class="field">
-          <label for="roomVideo">ვიდეოს ბმული <span style="font-weight:400">(არასავალდებულო, მოგვიანებითაც დაემატება)</span></label>
-          <input type="url" id="roomVideo" placeholder="YouTube, Twitch ან პირდაპირი .mp4 ბმული">
-        </div>
-        <button type="submit" class="btn btn-primary btn-block" id="createSubmit">ოთახის შექმნა</button>
-      </form>
+      </div>
     </div>
 
     <div class="card">
@@ -81,7 +97,14 @@ const ERROR_MESSAGES = {
   WRONG_PASSWORD: 'პაროლი არასწორია.',
   NOT_FOUND: 'ოთახი ვერ მოიძებნა (შეიძლება წაშლილია).',
   NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
+  BAD_EMAIL: 'ჩაწერე ელფოსტა.',
+  CANNOT_ADD_SELF: 'საკუთარ თავს ვერ დაამატებ.',
+  ALREADY_FRIEND: 'ეს მეგობარი უკვე დამატებულია.',
 };
+function friendErrText(code) {
+  if (code === 'NOT_FOUND') return 'ამ ელფოსტით რეგისტრირებული მომხმარებელი ვერ მოიძებნა.';
+  return errText(code);
+}
 function errText(code) { return ERROR_MESSAGES[code] || 'დაფიქსირდა შეცდომა, სცადეთ ისევ.'; }
 
 async function api(url, opts) {
@@ -111,6 +134,7 @@ async function init() {
   me = meRes.user;
   document.getElementById('usernamePill').textContent = '👤 ' + me.username;
   loadRooms();
+  loadFriends();
 }
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
@@ -137,6 +161,63 @@ createForm.addEventListener('submit', async (e) => {
     return;
   }
   window.location.href = '/room.html?id=' + encodeURIComponent(result.room.id);
+});
+
+// ---- Friends ----
+const friendList = document.getElementById('friendList');
+const friendError = document.getElementById('friendError');
+const addFriendForm = document.getElementById('addFriendForm');
+
+function renderFriends(friends) {
+  if (!friends.length) {
+    friendList.innerHTML = '<div class="empty-state">ჯერ არავინაა დამატებული</div>';
+    return;
+  }
+  friendList.innerHTML = '';
+  for (const f of friends) {
+    const div = document.createElement('div');
+    div.className = 'friend-card';
+    div.innerHTML = `
+      <div class="info">
+        <div class="name">${escapeHtml(f.username)}</div>
+      </div>
+    `;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-ghost btn-sm';
+    btn.textContent = 'წაშლა';
+    btn.addEventListener('click', () => removeFriend(f.id));
+    div.appendChild(btn);
+    friendList.appendChild(div);
+  }
+}
+
+async function loadFriends() {
+  const result = await api('/api/friends');
+  if (!result.ok) return;
+  renderFriends(result.friends);
+}
+
+async function removeFriend(id) {
+  await api('/api/friends/' + encodeURIComponent(id), { method: 'DELETE' });
+  loadFriends();
+}
+
+addFriendForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  friendError.classList.add('hidden');
+  const submitBtn = document.getElementById('addFriendSubmit');
+  submitBtn.disabled = true;
+  const emailInput = document.getElementById('friendEmail');
+  const email = emailInput.value;
+  const result = await postJSON('/api/friends', { email });
+  submitBtn.disabled = false;
+  if (!result.ok) {
+    friendError.textContent = friendErrText(result.error);
+    friendError.classList.remove('hidden');
+    return;
+  }
+  emailInput.value = '';
+  loadFriends();
 });
 
 // ---- Room list / search ----

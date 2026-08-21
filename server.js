@@ -30,7 +30,7 @@ function saveJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-let users = loadJSON(USERS_FILE); // [{id, username, usernameLower, email, emailLower, passwordHash, createdAt}]
+let users = loadJSON(USERS_FILE); // [{id, username, usernameLower, email, emailLower, passwordHash, friends, createdAt}]
 let rooms = loadJSON(ROOMS_FILE); // [{id, name, ownerId, ownerUsername, passwordHash, videoUrl, admins, createdAt}]
 
 // token -> userId, persisted so a server restart doesn't log everyone out
@@ -265,6 +265,35 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: publicUser(req.user) });
+});
+
+// ---------- Friends ----------
+app.get('/api/friends', requireAuth, (req, res) => {
+  const friendIds = req.user.friends || [];
+  const list = friendIds.map((id) => users.find((u) => u.id === id)).filter(Boolean).map(publicUser);
+  res.json({ ok: true, friends: list });
+});
+
+app.post('/api/friends', requireAuth, (req, res) => {
+  const { email } = req.body || {};
+  if (typeof email !== 'string' || !email.trim()) {
+    return res.status(400).json({ error: 'BAD_EMAIL' });
+  }
+  const emailLower = email.trim().toLowerCase();
+  const friend = users.find((u) => u.emailLower === emailLower);
+  if (!friend) return res.status(404).json({ error: 'NOT_FOUND' });
+  if (friend.id === req.user.id) return res.status(400).json({ error: 'CANNOT_ADD_SELF' });
+  if (!req.user.friends) req.user.friends = [];
+  if (req.user.friends.includes(friend.id)) return res.status(409).json({ error: 'ALREADY_FRIEND' });
+  req.user.friends.push(friend.id);
+  saveJSON(USERS_FILE, users);
+  res.json({ ok: true, friend: publicUser(friend) });
+});
+
+app.delete('/api/friends/:id', requireAuth, (req, res) => {
+  req.user.friends = (req.user.friends || []).filter((id) => id !== req.params.id);
+  saveJSON(USERS_FILE, users);
+  res.json({ ok: true });
 });
 
 // ---------- Rooms ----------
