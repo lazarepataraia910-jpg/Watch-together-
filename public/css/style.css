@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Georgian:wght@400;500;600;700&display=swap');
+
 :root {
   --bg: #0f1115;
   --bg-elevated: #171a21;
@@ -8,6 +10,7 @@
   --accent: #7c5cff;
   --accent-hover: #6a4ce0;
   --accent-soft: rgba(124, 92, 255, 0.15);
+  --accent-glow: rgba(124, 92, 255, 0.35);
   --danger: #ff5c72;
   --success: #4cd97b;
   --radius: 14px;
@@ -23,10 +26,15 @@ html, body {
 
 body {
   margin: 0;
-  font-family: 'Segoe UI', 'Noto Sans Georgian', system-ui, -apple-system, sans-serif;
-  background: radial-gradient(circle at 20% -10%, #241f3d 0%, var(--bg) 45%) fixed;
+  font-family: 'Inter', 'Noto Sans Georgian', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background:
+    radial-gradient(circle at 18% -8%, #2b2350 0%, transparent 40%),
+    radial-gradient(circle at 88% 10%, #1c2f4a 0%, transparent 35%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -71,6 +79,7 @@ input, button, textarea {
 
 .brand .logo {
   font-size: 24px;
+  filter: drop-shadow(0 0 12px var(--accent-glow));
 }
 
 .topbar-right {
@@ -98,7 +107,7 @@ input, button, textarea {
   background: var(--bg-card);
   color: var(--text);
   border: 1px solid var(--border);
-  transition: transform 0.08s ease, border-color 0.15s ease, background 0.15s ease;
+  transition: transform 0.08s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .btn:hover {
   border-color: var(--accent);
@@ -110,9 +119,12 @@ input, button, textarea {
   background: linear-gradient(135deg, var(--accent), #9b7bff);
   border: none;
   color: white;
+  box-shadow: 0 4px 16px -4px var(--accent-glow);
 }
 .btn-primary:hover {
   background: linear-gradient(135deg, var(--accent-hover), #8a6bf0);
+  box-shadow: 0 6px 20px -4px var(--accent-glow);
+  transform: translateY(-1px);
 }
 .btn-primary:disabled {
   opacity: 0.6;
@@ -201,12 +213,19 @@ input::placeholder {
 }
 .auth-header .logo {
   font-size: 40px;
-  display: block;
-  margin-bottom: 8px;
+  display: inline-block;
+  margin-bottom: 10px;
+  filter: drop-shadow(0 0 20px var(--accent-glow));
 }
 .auth-header h1 {
   margin: 0 0 6px;
-  font-size: 22px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--text), #b9a8ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 .auth-header p {
   margin: 0;
@@ -305,6 +324,7 @@ input::placeholder {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 24px;
+  box-shadow: 0 12px 32px -16px rgba(0, 0, 0, 0.5);
 }
 
 .card h2 {
@@ -346,6 +366,12 @@ input::placeholder {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.room-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -10px rgba(0, 0, 0, 0.5);
 }
 
 .room-card .info {
@@ -384,6 +410,11 @@ input::placeholder {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.friend-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .friend-card .name {
@@ -405,6 +436,13 @@ input::placeholder {
   color: var(--text-muted);
   padding: 40px 20px;
   font-size: 14px;
+}
+.loading-state {
+  animation: pulse-fade 1.6s ease-in-out infinite;
+}
+@keyframes pulse-fade {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 /* ---------- Modal ---------- */
