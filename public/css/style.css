@@ -561,6 +561,10 @@ input::placeholder {
   width: auto;
   padding: 7px 10px;
 }
+.viewer-controls #ccBtn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 
 .owner-bar {
   display: flex;

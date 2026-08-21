@@ -25,6 +25,7 @@
     <div class="viewer-controls hidden" id="viewerControls">
       <button class="btn btn-ghost btn-sm" id="muteBtn" type="button">🔊</button>
       <input type="range" id="volumeSlider" min="0" max="100" value="100">
+      <button class="btn btn-ghost btn-sm hidden" id="ccBtn" type="button">CC</button>
       <select id="qualitySelect" class="hidden"></select>
       <button class="btn btn-ghost btn-sm" id="fullscreenBtn" type="button">⛶ სრულ ეკრანზე</button>
     </div>
@@ -106,8 +107,10 @@ const shareScreenBtn = document.getElementById('shareScreenBtn');
 const viewerControls = document.getElementById('viewerControls');
 const muteBtn = document.getElementById('muteBtn');
 const volumeSlider = document.getElementById('volumeSlider');
+const ccBtn = document.getElementById('ccBtn');
 const qualitySelect = document.getElementById('qualitySelect');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
+let ccOn = false;
 
 function updateViewerControlsVisibility() {
   const show = !canControl && (currentSourceType === 'youtube' || currentSourceType === 'twitch' || currentSourceType === 'file');
@@ -136,6 +139,9 @@ function populateQualitySelect(levels, current) {
 
 function setupViewerControlsForYouTube() {
   updateViewerControlsVisibility();
+  ccOn = false;
+  ccBtn.classList.remove('hidden');
+  ccBtn.classList.remove('active');
   if (canControl || !ytPlayer) return;
   refreshMuteIcon(ytPlayer.isMuted());
   volumeSlider.value = ytPlayer.getVolume();
@@ -145,6 +151,7 @@ function setupViewerControlsForYouTube() {
 
 function setupViewerControlsForTwitch() {
   updateViewerControlsVisibility();
+  ccBtn.classList.add('hidden');
   if (canControl || !twitchPlayer) return;
   refreshMuteIcon(twitchPlayer.getMuted());
   volumeSlider.value = Math.round((twitchPlayer.getVolume() || 0) * 100);
@@ -156,10 +163,18 @@ function setupViewerControlsForTwitch() {
 function setupViewerControlsForFile() {
   updateViewerControlsVisibility();
   qualitySelect.classList.add('hidden');
+  ccBtn.classList.add('hidden');
   if (canControl || !fileVideoEl) return;
   refreshMuteIcon(fileVideoEl.muted);
   volumeSlider.value = Math.round((fileVideoEl.volume == null ? 1 : fileVideoEl.volume) * 100);
 }
+
+ccBtn.addEventListener('click', () => {
+  if (currentSourceType !== 'youtube' || !ytPlayer) return;
+  ccOn = !ccOn;
+  if (ccOn) ytPlayer.loadModule('captions'); else ytPlayer.unloadModule('captions');
+  ccBtn.classList.toggle('active', ccOn);
+});
 
 muteBtn.addEventListener('click', () => {
   if (currentSourceType === 'youtube' && ytPlayer) {
@@ -287,7 +302,10 @@ function buildYouTubePlayer(videoId, initialVideoState) {
 
   ytPlayer = new YT.Player('ytHolder', {
     videoId,
-    playerVars: { autoplay: 0, playsinline: 1, controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1, fs: canControl ? 1 : 0 },
+    playerVars: {
+      autoplay: 0, playsinline: 1, rel: 0, iv_load_policy: 3,
+      controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1, fs: canControl ? 1 : 0,
+    },
     events: {
       onReady: () => {
         applyRemoteVideoState(initialVideoState, true);
