@@ -402,14 +402,23 @@ function applyRemoteVideoState(video, isInitial) {
   applyingRemote = true;
   const target = estimateCurrentTime(video);
 
+  // A fresh, never-played room starts paused at time 0 — leave the player in its natural
+  // cued state (thumbnail + play button) instead of forcing seek/pause, which can leave
+  // YouTube's iframe rendering solid black before it has ever buffered a frame.
+  const isPristine = isInitial && !video.playing && target < 1;
+
   if (currentSourceType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
-    const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
-    if (Math.abs(cur - target) > 1.2 || isInitial) ytPlayer.seekTo(target, true);
-    if (video.playing) ytPlayer.playVideo(); else ytPlayer.pauseVideo();
+    if (!isPristine) {
+      const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
+      if (Math.abs(cur - target) > 1.2 || isInitial) ytPlayer.seekTo(target, true);
+      if (video.playing) ytPlayer.playVideo(); else ytPlayer.pauseVideo();
+    }
   } else if (currentSourceType === 'twitch' && twitchPlayer && twitchPlayer.seek) {
-    const cur = twitchPlayer.getCurrentTime ? twitchPlayer.getCurrentTime() : 0;
-    if (Math.abs(cur - target) > 1.2 || isInitial) twitchPlayer.seek(target);
-    if (video.playing) twitchPlayer.play(); else twitchPlayer.pause();
+    if (!isPristine) {
+      const cur = twitchPlayer.getCurrentTime ? twitchPlayer.getCurrentTime() : 0;
+      if (Math.abs(cur - target) > 1.2 || isInitial) twitchPlayer.seek(target);
+      if (video.playing) twitchPlayer.play(); else twitchPlayer.pause();
+    }
   } else if (currentSourceType === 'file' && fileVideoEl) {
     if (Math.abs(fileVideoEl.currentTime - target) > 1.2 || isInitial) fileVideoEl.currentTime = target;
     if (video.playing) fileVideoEl.play().catch(() => {}); else fileVideoEl.pause();
