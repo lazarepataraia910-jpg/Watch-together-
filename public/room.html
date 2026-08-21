@@ -23,7 +23,7 @@
     </div>
 
     <div class="owner-bar hidden" id="ownerBar">
-      <input type="url" id="videoUrlInput" placeholder="ჩასვი YouTube ან პირდაპირი .mp4 ბმული">
+      <input type="url" id="videoUrlInput" placeholder="ჩასვი YouTube, Twitch ან პირდაპირი .mp4 ბმული">
       <button class="btn btn-primary" id="loadVideoBtn">ჩატვირთვა</button>
       <button class="btn btn-ghost" id="shareScreenBtn">🖥️ სქრინის გაზიარება</button>
     </div>
@@ -71,11 +71,14 @@ let canControl = false;
 let lastVideoState = null;
 let lastParticipants = [];
 let applyingRemote = false;
-let currentSourceType = 'none'; // 'none' | 'youtube' | 'file' | 'screen'
+let currentSourceType = 'none'; // 'none' | 'youtube' | 'twitch' | 'file' | 'screen'
 let ytPlayer = null;
 let ytReady = false;
 let pendingYtLoad = null;
 let fileVideoEl = null;
+let twitchPlayer = null;
+let twitchReady = false;
+let pendingTwitchLoad = null;
 
 // ---------- Screen share (WebRTC, mesh: sharer holds one RTCPeerConnection per viewer) ----------
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
@@ -98,10 +101,18 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
+const TWITCH_RESERVED_PATHS = ['videos', 'directory', 'p', 'settings', 'subscriptions', 'wallet', 'downloads'];
+
 function parseVideoUrl(url) {
   if (!url) return { type: 'none' };
   const yt = url.match(/(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   if (yt) return { type: 'youtube', id: yt[1] };
+  const twitchVod = url.match(/twitch\.tv\/(?:videos\/|[^/?#]+\/video(?:s)?\/)(\d+)/);
+  if (twitchVod) return { type: 'twitch-vod', id: twitchVod[1] };
+  const twitchLive = url.match(/twitch\.tv\/([a-zA-Z0-9_]{3,25})\/?(?:[?#].*)?$/);
+  if (twitchLive && !TWITCH_RESERVED_PATHS.includes(twitchLive[1].toLowerCase())) {
+    return { type: 'twitch-live', channel: twitchLive[1] };
+  }
   return { type: 'file', url };
 }
 
@@ -125,12 +136,16 @@ function youtubeErrorMessage(code) {
   return messages[code] || 'ვიდეოს ჩატვირთვა ვერ მოხერხდა.';
 }
 
-// ---------- Player: builds either a YouTube iframe player or an HTML5 <video> ----------
+// ---------- Player: builds a YouTube/Twitch iframe player or an HTML5 <video> ----------
 function destroyPlayer() {
   if (ytPlayer && ytPlayer.destroy) {
     try { ytPlayer.destroy(); } catch {}
   }
+  if (twitchPlayer) {
+    try { twitchPlayer.pause(); } catch {}
+  }
   ytPlayer = null;
+  twitchPlayer = null;
   fileVideoEl = null;
   playerFrame.innerHTML = '';
 }
@@ -182,6 +197,55 @@ function buildYouTubePlayer(videoId, initialVideoState) {
   });
 }
 
+function loadTwitchApiIfNeeded() {
+  if (window.Twitch && window.Twitch.Player) {
+    twitchReady = true;
+    return;
+  }
+  if (document.getElementById('twitch-embed-api')) return;
+  const tag = document.createElement('script');
+  tag.id = 'twitch-embed-api';
+  tag.src = 'https://embed.twitch.tv/embed/v1.js';
+  tag.onload = () => {
+    twitchReady = true;
+    if (pendingTwitchLoad) {
+      const load = pendingTwitchLoad;
+      pendingTwitchLoad = null;
+      load();
+    }
+  };
+  tag.onerror = () => showPlayerError('Twitch-ის პლეიერი ვერ ჩაიტვირთა.');
+  document.head.appendChild(tag);
+}
+
+function buildTwitchPlayer(parsed, initialVideoState) {
+  destroyPlayer();
+  currentSourceType = 'twitch';
+  const holder = document.createElement('div');
+  holder.id = 'twitchHolder';
+  playerFrame.appendChild(holder);
+
+  const options = { width: '100%', height: '100%', parent: [window.location.hostname], autoplay: false };
+  if (parsed.type === 'twitch-vod') options.video = parsed.id;
+  else options.channel = parsed.channel;
+
+  twitchPlayer = new Twitch.Player('twitchHolder', options);
+
+  twitchPlayer.addEventListener(Twitch.Player.READY, () => {
+    if (parsed.type === 'twitch-vod') applyRemoteVideoState(initialVideoState, true);
+  });
+  if (parsed.type === 'twitch-vod') {
+    twitchPlayer.addEventListener(Twitch.Player.PLAY, () => {
+      if (!canControl || applyingRemote || !twitchPlayer) return;
+      socket.emit('video:play', twitchPlayer.getCurrentTime());
+    });
+    twitchPlayer.addEventListener(Twitch.Player.PAUSE, () => {
+      if (!canControl || applyingRemote || !twitchPlayer) return;
+      socket.emit('video:pause', twitchPlayer.getCurrentTime());
+    });
+  }
+}
+
 function buildFilePlayer(url, initialVideoState) {
   destroyPlayer();
   currentSourceType = 'file';
@@ -228,6 +292,13 @@ function setSource(video) {
       buildYouTubePlayer(parsed.id, video);
     } else {
       pendingYtLoad = { id: parsed.id, video };
+    }
+  } else if (parsed.type === 'twitch-vod' || parsed.type === 'twitch-live') {
+    loadTwitchApiIfNeeded();
+    if (twitchReady && window.Twitch && window.Twitch.Player) {
+      buildTwitchPlayer(parsed, video);
+    } else {
+      pendingTwitchLoad = () => buildTwitchPlayer(parsed, video);
     }
   } else {
     buildFilePlayer(parsed.url, video);
@@ -335,6 +406,10 @@ function applyRemoteVideoState(video, isInitial) {
     const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
     if (Math.abs(cur - target) > 1.2 || isInitial) ytPlayer.seekTo(target, true);
     if (video.playing) ytPlayer.playVideo(); else ytPlayer.pauseVideo();
+  } else if (currentSourceType === 'twitch' && twitchPlayer && twitchPlayer.seek) {
+    const cur = twitchPlayer.getCurrentTime ? twitchPlayer.getCurrentTime() : 0;
+    if (Math.abs(cur - target) > 1.2 || isInitial) twitchPlayer.seek(target);
+    if (video.playing) twitchPlayer.play(); else twitchPlayer.pause();
   } else if (currentSourceType === 'file' && fileVideoEl) {
     if (Math.abs(fileVideoEl.currentTime - target) > 1.2 || isInitial) fileVideoEl.currentTime = target;
     if (video.playing) fileVideoEl.play().catch(() => {}); else fileVideoEl.pause();
