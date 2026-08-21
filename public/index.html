@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch Together — ოთახები</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="logo">🎬</span> Watch Together</div>
+  <div class="topbar-right">
+    <span class="username-pill" id="usernamePill">…</span>
+    <button class="btn btn-ghost btn-sm" id="logoutBtn">გამოსვლა</button>
+  </div>
+</div>
+
+<div class="page">
+  <div class="grid-2">
+    <div class="card">
+      <h2>ოთახის შექმნა
+        <span class="sub">დაარქვი სახელი, დააწესე პაროლი — მეგობრები იპოვიან და პაროლით შემოვლენ</span>
+      </h2>
+      <div id="createError" class="error-box hidden"></div>
+      <form id="createForm">
+        <div class="field">
+          <label for="roomName">ოთახის სახელი</label>
+          <input type="text" id="roomName" placeholder="მაგ. კინოსერანტი პარასკევს" required>
+        </div>
+        <div class="field">
+          <label for="roomPassword">პაროლი</label>
+          <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
+        </div>
+        <div class="field">
+          <label for="roomVideo">ვიდეოს ბმული <span style="font-weight:400">(არასავალდებულო, მოგვიანებითაც დაემატება)</span></label>
+          <input type="url" id="roomVideo" placeholder="YouTube ან პირდაპირი .mp4 ბმული">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="createSubmit">ოთახის შექმნა</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>ოთახების ძებნა
+        <span class="sub">იპოვე ოთახი სახელით და შედი პაროლით</span>
+      </h2>
+      <div class="search-row">
+        <input type="search" id="searchInput" placeholder="ძებნა სახელით…">
+        <button class="btn btn-ghost" id="refreshBtn">🔄</button>
+      </div>
+      <div class="room-list" id="roomList">
+        <div class="empty-state">იტვირთება…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="joinModal">
+  <div class="modal">
+    <h3 id="joinModalTitle">ოთახში შესვლა</h3>
+    <p>შეიყვანე ამ ოთახის პაროლი</p>
+    <div id="joinError" class="error-box hidden"></div>
+    <div class="field">
+      <input type="text" id="joinPassword" placeholder="პაროლი">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="joinCancelBtn" type="button">გაუქმება</button>
+      <button class="btn btn-primary" id="joinConfirmBtn" type="button">შესვლა</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let me = null;
+let pendingRoomId = null;
+let pendingIsOwner = false;
+
+const ERROR_MESSAGES = {
+  BAD_NAME: 'სახელი უნდა იყოს 2-40 სიმბოლო.',
+  BAD_PASSWORD: 'პაროლი უნდა იყოს მინიმუმ 3 სიმბოლო.',
+  WRONG_PASSWORD: 'პაროლი არასწორია.',
+  NOT_FOUND: 'ოთახი ვერ მოიძებნა (შეიძლება წაშლილია).',
+  NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
+};
+function errText(code) { return ERROR_MESSAGES[code] || 'დაფიქსირდა შეცდომა, სცადეთ ისევ.'; }
+
+async function api(url, opts) {
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch {
+    return { ok: false, error: 'NETWORK' };
+  }
+  if (res.status === 401) {
+    window.location.href = '/login.html';
+    return { ok: false, error: 'AUTH_REQUIRED' };
+  }
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (!res.ok) return { ok: false, error: data.error || 'ERROR' };
+  return data;
+}
+function postJSON(url, body) {
+  return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+}
+
+async function init() {
+  const meRes = await api('/api/me');
+  if (!meRes.ok && meRes.error !== 'AUTH_REQUIRED') return;
+  if (!meRes.user) return;
+  me = meRes.user;
+  document.getElementById('usernamePill').textContent = '👤 ' + me.username;
+  loadRooms();
+}
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await postJSON('/api/logout');
+  window.location.href = '/login.html';
+});
+
+// ---- Create room ----
+const createForm = document.getElementById('createForm');
+const createError = document.getElementById('createError');
+createForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  createError.classList.add('hidden');
+  const submitBtn = document.getElementById('createSubmit');
+  submitBtn.disabled = true;
+  const name = document.getElementById('roomName').value;
+  const password = document.getElementById('roomPassword').value;
+  const videoUrl = document.getElementById('roomVideo').value;
+  const result = await postJSON('/api/rooms', { name, password, videoUrl });
+  submitBtn.disabled = false;
+  if (!result.ok) {
+    createError.textContent = errText(result.error);
+    createError.classList.remove('hidden');
+    return;
+  }
+  window.location.href = '/room.html?id=' + encodeURIComponent(result.room.id);
+});
+
+// ---- Room list / search ----
+const roomList = document.getElementById('roomList');
+const searchInput = document.getElementById('searchInput');
+let searchDebounce = null;
+
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'ახლახანს';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + ' წთ წინ';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + ' სთ წინ';
+  return Math.floor(h / 24) + ' დღის წინ';
+}
+
+function renderRooms(rooms) {
+  if (!rooms.length) {
+    roomList.innerHTML = '<div class="empty-state">ოთახი ვერ მოიძებნა.<br>შექმენი პირველი ოთახი მარცხნივ 👈</div>';
+    return;
+  }
+  roomList.innerHTML = '';
+  for (const r of rooms) {
+    const div = document.createElement('div');
+    div.className = 'room-card';
+    const isMine = me && r.ownerUsername === me.username;
+    div.innerHTML = `
+      <div class="info">
+        <div class="name">${escapeHtml(r.name)}</div>
+        <div class="meta">
+          <span>${r.viewerCount > 0 ? '<span class="live-dot"></span>' + r.viewerCount + ' უყურებს' : timeAgo(r.createdAt)}</span>
+          <span>· ${escapeHtml(r.ownerUsername)}</span>
+        </div>
+      </div>
+    `;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-primary btn-sm';
+    btn.textContent = isMine ? 'შესვლა (ჩემი)' : 'შესვლა';
+    btn.addEventListener('click', () => openJoin(r.id, r.name, isMine));
+    div.appendChild(btn);
+    roomList.appendChild(div);
+  }
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function loadRooms() {
+  const q = searchInput.value.trim();
+  const result = await api('/api/rooms?search=' + encodeURIComponent(q));
+  if (!result.ok) return;
+  renderRooms(result.rooms);
+}
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadRooms, 250);
+});
+document.getElementById('refreshBtn').addEventListener('click', loadRooms);
+setInterval(loadRooms, 6000);
+
+// ---- Join modal ----
+const joinModal = document.getElementById('joinModal');
+const joinPassword = document.getElementById('joinPassword');
+const joinError = document.getElementById('joinError');
+
+function openJoin(roomId, roomName, isOwner) {
+  pendingRoomId = roomId;
+  pendingIsOwner = isOwner;
+  document.getElementById('joinModalTitle').textContent = roomName;
+  joinPassword.value = '';
+  joinError.classList.add('hidden');
+  joinModal.classList.remove('hidden');
+  if (isOwner) {
+    goToRoom();
+  } else {
+    setTimeout(() => joinPassword.focus(), 50);
+  }
+}
+document.getElementById('joinCancelBtn').addEventListener('click', () => {
+  joinModal.classList.add('hidden');
+});
+document.getElementById('joinConfirmBtn').addEventListener('click', goToRoom);
+joinPassword.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') goToRoom();
+});
+
+async function goToRoom() {
+  const password = joinPassword.value;
+  const result = await postJSON('/api/rooms/' + encodeURIComponent(pendingRoomId) + '/join', { password });
+  if (!result.ok) {
+    joinError.textContent = errText(result.error);
+    joinError.classList.remove('hidden');
+    return;
+  }
+  window.location.href = '/room.html?id=' + encodeURIComponent(pendingRoomId);
+}
+
+init();
+</script>
+
+</body>
+</html>

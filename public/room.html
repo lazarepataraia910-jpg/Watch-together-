@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch Together — ოთახი</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="room-topbar">
+  <div class="title">
+    🎬 <span id="roomNameLabel">იტვირთება…</span>
+    <span class="sub" id="viewerCountLabel"></span>
+  </div>
+  <button class="btn btn-ghost btn-sm" id="leaveBtn">← დატოვება</button>
+</div>
+
+<div class="room-shell">
+  <div class="player-col">
+    <div class="player-frame" id="playerFrame">
+      <div class="player-placeholder" id="playerPlaceholder">ვიდეო ჯერ არ არის დამატებული</div>
+    </div>
+
+    <div class="owner-bar hidden" id="ownerBar">
+      <input type="url" id="videoUrlInput" placeholder="ჩასვი YouTube ან პირდაპირი .mp4 ბმული">
+      <button class="btn btn-primary" id="loadVideoBtn">ჩატვირთვა</button>
+      <button class="btn btn-ghost" id="shareScreenBtn">🖥️ სქრინის გაზიარება</button>
+    </div>
+    <div class="sync-hint" id="syncHint"></div>
+    <div class="sync-hint" id="shareHint"></div>
+  </div>
+
+  <div class="side-col">
+    <div class="panel admins-panel">
+      <h3>ადმინები</h3>
+      <div class="admins-list" id="adminsList"></div>
+    </div>
+
+    <div class="panel participants-panel">
+      <h3>ვინც უყურებს</h3>
+      <div class="participants-list" id="participantsList"></div>
+    </div>
+
+    <div class="panel chat-panel">
+      <h3>ჩატი</h3>
+      <div class="chat-messages" id="chatMessages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="დაწერე რამე…" maxlength="500">
+        <button class="btn btn-primary btn-sm" id="chatSendBtn">გაგზავნა</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomId = params.get('id');
+if (!roomId) window.location.href = '/index.html';
+
+document.getElementById('leaveBtn').addEventListener('click', () => {
+  window.location.href = '/index.html';
+});
+
+let isOwner = false;
+let ownerId = null;
+let adminIds = [];
+let myId = null;
+let canControl = false;
+let lastVideoState = null;
+let lastParticipants = [];
+let applyingRemote = false;
+let currentSourceType = 'none'; // 'none' | 'youtube' | 'file' | 'screen'
+let ytPlayer = null;
+let ytReady = false;
+let pendingYtLoad = null;
+let fileVideoEl = null;
+
+// ---------- Screen share (WebRTC, mesh: sharer holds one RTCPeerConnection per viewer) ----------
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+let screenStream = null; // local capture, only set when I'm the sharer
+let isSharing = false;
+let peerConnections = {}; // viewerSocketId -> RTCPeerConnection, only used when I'm the sharer
+let viewerPeerConnection = null; // used when I'm watching someone else's share
+let currentSharerSocketId = null;
+let currentSharerUsername = null;
+
+const playerFrame = document.getElementById('playerFrame');
+const playerPlaceholder = document.getElementById('playerPlaceholder');
+const syncHint = document.getElementById('syncHint');
+const shareHint = document.getElementById('shareHint');
+const shareScreenBtn = document.getElementById('shareScreenBtn');
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function parseVideoUrl(url) {
+  if (!url) return { type: 'none' };
+  const yt = url.match(/(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (yt) return { type: 'youtube', id: yt[1] };
+  return { type: 'file', url };
+}
+
+function showPlayerError(text) {
+  destroyPlayer();
+  currentSourceType = 'none';
+  const div = document.createElement('div');
+  div.className = 'player-placeholder';
+  div.textContent = text;
+  playerFrame.appendChild(div);
+}
+
+function youtubeErrorMessage(code) {
+  const messages = {
+    2: 'ვიდეოს ბმული არასწორია.',
+    5: 'ვიდეო ვერ ჩაიტვირთა (დაკვრის შეცდომა).',
+    100: 'ვიდეო ვერ მოიძებნა — შესაძლოა წაშლილია ან პირადია.',
+    101: 'ამ ვიდეოს ავტორმა დაბლოკა მისი ჩვენება სხვა საიტებზე.',
+    150: 'ამ ვიდეოს ავტორმა დაბლოკა მისი ჩვენება სხვა საიტებზე.',
+  };
+  return messages[code] || 'ვიდეოს ჩატვირთვა ვერ მოხერხდა.';
+}
+
+// ---------- Player: builds either a YouTube iframe player or an HTML5 <video> ----------
+function destroyPlayer() {
+  if (ytPlayer && ytPlayer.destroy) {
+    try { ytPlayer.destroy(); } catch {}
+  }
+  ytPlayer = null;
+  fileVideoEl = null;
+  playerFrame.innerHTML = '';
+}
+
+function loadYouTubeApiIfNeeded() {
+  if (window.YT && window.YT.Player) {
+    ytReady = true;
+    return;
+  }
+  if (document.getElementById('yt-iframe-api')) return;
+  const tag = document.createElement('script');
+  tag.id = 'yt-iframe-api';
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+  window.onYouTubeIframeAPIReady = () => {
+    ytReady = true;
+    if (pendingYtLoad) {
+      const { id, video } = pendingYtLoad;
+      pendingYtLoad = null;
+      buildYouTubePlayer(id, video);
+    }
+  };
+}
+
+function buildYouTubePlayer(videoId, initialVideoState) {
+  destroyPlayer();
+  currentSourceType = 'youtube';
+  const holder = document.createElement('div');
+  holder.id = 'ytHolder';
+  playerFrame.appendChild(holder);
+
+  ytPlayer = new YT.Player('ytHolder', {
+    videoId,
+    playerVars: { autoplay: 0, playsinline: 1, controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1 },
+    events: {
+      onReady: () => {
+        applyRemoteVideoState(initialVideoState, true);
+      },
+      onStateChange: (e) => {
+        if (!canControl || applyingRemote) return;
+        if (e.data === YT.PlayerState.PLAYING) {
+          socket.emit('video:play', ytPlayer.getCurrentTime());
+        } else if (e.data === YT.PlayerState.PAUSED) {
+          socket.emit('video:pause', ytPlayer.getCurrentTime());
+        }
+      },
+      onError: (e) => showPlayerError(youtubeErrorMessage(e.data)),
+    },
+  });
+}
+
+function buildFilePlayer(url, initialVideoState) {
+  destroyPlayer();
+  currentSourceType = 'file';
+  const video = document.createElement('video');
+  video.src = url;
+  video.controls = canControl;
+  fileVideoEl = video;
+  playerFrame.appendChild(video);
+
+  video.addEventListener('error', () => {
+    showPlayerError('ვიდეოს ბმული ვერ ჩაიტვირთა — დარწმუნდი, რომ ეს პირდაპირი .mp4 ბმულია.');
+  });
+  video.addEventListener('play', () => {
+    if (!canControl || applyingRemote) return;
+    socket.emit('video:play', video.currentTime);
+  });
+  video.addEventListener('pause', () => {
+    if (!canControl || applyingRemote) return;
+    socket.emit('video:pause', video.currentTime);
+  });
+  let seekDebounce = null;
+  video.addEventListener('seeked', () => {
+    if (!canControl || applyingRemote) return;
+    clearTimeout(seekDebounce);
+    seekDebounce = setTimeout(() => socket.emit('video:seek', video.currentTime), 150);
+  });
+  video.addEventListener('loadedmetadata', () => {
+    applyRemoteVideoState(initialVideoState, true);
+  });
+}
+
+function setSource(video) {
+  const parsed = parseVideoUrl(video.url);
+  if (parsed.type === 'none') {
+    destroyPlayer();
+    currentSourceType = 'none';
+    playerFrame.appendChild(playerPlaceholder);
+    return;
+  }
+  playerPlaceholder.remove();
+  if (parsed.type === 'youtube') {
+    loadYouTubeApiIfNeeded();
+    if (ytReady && window.YT && window.YT.Player) {
+      buildYouTubePlayer(parsed.id, video);
+    } else {
+      pendingYtLoad = { id: parsed.id, video };
+    }
+  } else {
+    buildFilePlayer(parsed.url, video);
+  }
+}
+
+// ---------- Screen share ----------
+function stopViewerStream() {
+  if (viewerPeerConnection) {
+    try { viewerPeerConnection.close(); } catch {}
+    viewerPeerConnection = null;
+  }
+  currentSharerSocketId = null;
+  currentSharerUsername = null;
+}
+
+function stopAllOutgoingPeers() {
+  Object.values(peerConnections).forEach((pc) => { try { pc.close(); } catch {} });
+  peerConnections = {};
+}
+
+function updateShareButtonUi() {
+  if (!shareScreenBtn) return;
+  shareScreenBtn.textContent = isSharing ? '⏹ გაზიარების შეწყვეტა' : '🖥️ სქრინის გაზიარება';
+}
+
+async function startScreenShare() {
+  if (!canControl || isSharing) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  } catch (err) {
+    shareHint.textContent = 'სქრინის გაზიარება ვერ დაიწყო — წვდომა უარყოფილია ან გაუქმდა.';
+    return;
+  }
+  stopViewerStream();
+  screenStream = stream;
+  isSharing = true;
+  updateShareButtonUi();
+  destroyPlayer();
+  currentSourceType = 'screen';
+  const localVideo = document.createElement('video');
+  localVideo.autoplay = true;
+  localVideo.muted = true;
+  localVideo.playsInline = true;
+  localVideo.srcObject = screenStream;
+  playerFrame.innerHTML = '';
+  playerFrame.appendChild(localVideo);
+  shareHint.textContent = 'შენ აზიარებ სქრინს — ეს გამოსახულება ყველას მიეწოდება.';
+  socket.emit('screen:start');
+  screenStream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
+}
+
+function stopScreenShare() {
+  if (!isSharing) return;
+  if (screenStream) {
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+  }
+  stopAllOutgoingPeers();
+  isSharing = false;
+  updateShareButtonUi();
+  socket.emit('screen:stop');
+  shareHint.textContent = '';
+  showPlayerError('სქრინის გაზიარება დასრულდა.');
+}
+
+shareScreenBtn.addEventListener('click', () => {
+  if (isSharing) stopScreenShare(); else startScreenShare();
+});
+
+function watchScreenShare(username) {
+  currentSharerUsername = username || null;
+  destroyPlayer();
+  currentSourceType = 'screen';
+  shareHint.textContent = (username ? username + '-ის ' : '') + 'სქრინი — იტვირთება…';
+  socket.emit('webrtc:request');
+}
+
+function showRemoteScreenStream(stream, username) {
+  destroyPlayer();
+  currentSourceType = 'screen';
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.controls = false;
+  video.srcObject = stream;
+  playerFrame.innerHTML = '';
+  playerFrame.appendChild(video);
+  shareHint.textContent = username ? `უყურებ ${username}-ის სქრინს.` : '';
+}
+
+function estimateCurrentTime(video) {
+  if (!video.playing) return video.time;
+  const elapsed = (Date.now() - video.updatedAt) / 1000;
+  return video.time + Math.max(0, elapsed);
+}
+
+function applyRemoteVideoState(video, isInitial) {
+  if (!video || currentSourceType === 'none') return;
+  applyingRemote = true;
+  const target = estimateCurrentTime(video);
+
+  if (currentSourceType === 'youtube' && ytPlayer && ytPlayer.seekTo) {
+    const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
+    if (Math.abs(cur - target) > 1.2 || isInitial) ytPlayer.seekTo(target, true);
+    if (video.playing) ytPlayer.playVideo(); else ytPlayer.pauseVideo();
+  } else if (currentSourceType === 'file' && fileVideoEl) {
+    if (Math.abs(fileVideoEl.currentTime - target) > 1.2 || isInitial) fileVideoEl.currentTime = target;
+    if (video.playing) fileVideoEl.play().catch(() => {}); else fileVideoEl.pause();
+  }
+
+  setTimeout(() => { applyingRemote = false; }, 400);
+}
+
+// ---------- Socket ----------
+const socket = io();
+
+socket.on('connect', () => {
+  socket.emit('room:join', roomId);
+});
+
+socket.on('room:error', (code) => {
+  alert(code === 'NO_ACCESS' ? 'ამ ოთახზე წვდომა არ გაქვს — ჯერ პაროლით შედი დაშბორდიდან.' : 'ოთახი ვერ მოიძებნა.');
+  window.location.href = '/index.html';
+});
+
+function updateControlUi() {
+  document.getElementById('ownerBar').classList.toggle('hidden', !canControl);
+  syncHint.textContent = canControl
+    ? (isOwner ? 'შენ ხარ ოთახის მფლობელი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.' : 'შენ ხარ ადმინი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.')
+    : 'დაკვრა/პაუზა/გადახვევა/ხმა კონტროლდება მხოლოდ ადმინების მიერ და სინქრონდება ყველასთვის.';
+}
+
+socket.on('room:init', (data) => {
+  isOwner = data.isOwner;
+  ownerId = data.ownerId;
+  adminIds = data.admins || [];
+  myId = data.me && data.me.id;
+  canControl = isOwner || adminIds.includes(myId);
+  document.getElementById('roomNameLabel').textContent = data.roomName;
+  updateControlUi();
+  renderParticipants(data.participants);
+  data.chat.forEach(renderChatMessage);
+  scrollChatToBottom();
+  lastVideoState = data.video;
+  if (data.screenSharer) {
+    currentSharerSocketId = data.screenSharer.socketId;
+    watchScreenShare(data.screenSharer.username);
+  } else {
+    setSource(data.video);
+  }
+});
+
+socket.on('room:participants', renderParticipants);
+
+socket.on('room:admins', (admins) => {
+  adminIds = admins || [];
+  const before = canControl;
+  canControl = isOwner || adminIds.includes(myId);
+  updateControlUi();
+  renderParticipants(lastParticipants);
+  if (before !== canControl && lastVideoState) setSource(lastVideoState);
+});
+
+socket.on('video:source', (video) => {
+  lastVideoState = video;
+  stopViewerStream();
+  setSource(video);
+});
+socket.on('video:state', (video) => { lastVideoState = video; applyRemoteVideoState(video, false); });
+
+// ---------- Screen share signaling ----------
+socket.on('screen:started', ({ username }) => {
+  if (isSharing) return; // I'm the one sharing, ignore my own broadcast
+  watchScreenShare(username);
+});
+
+socket.on('screen:stopped', () => {
+  stopViewerStream();
+  shareHint.textContent = '';
+  if (isSharing) {
+    // our own share got superseded server-side (e.g. we loaded a URL video instead)
+    if (screenStream) { screenStream.getTracks().forEach((t) => t.stop()); screenStream = null; }
+    stopAllOutgoingPeers();
+    isSharing = false;
+    updateShareButtonUi();
+  } else {
+    showPlayerError('სქრინის გაზიარება დასრულდა.');
+  }
+});
+
+socket.on('webrtc:request', async ({ viewerSocketId }) => {
+  if (!isSharing || !screenStream) return;
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  peerConnections[viewerSocketId] = pc;
+  screenStream.getTracks().forEach((track) => pc.addTrack(track, screenStream));
+  pc.onicecandidate = (e) => {
+    if (e.candidate) socket.emit('webrtc:ice-candidate', { to: viewerSocketId, candidate: e.candidate });
+  };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+      pc.close();
+      delete peerConnections[viewerSocketId];
+    }
+  };
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit('webrtc:offer', { to: viewerSocketId, sdp: offer });
+});
+
+socket.on('webrtc:offer', async ({ from, sdp }) => {
+  stopViewerStream();
+  currentSharerSocketId = from;
+  viewerPeerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  viewerPeerConnection.ontrack = (e) => {
+    showRemoteScreenStream(e.streams[0], currentSharerUsername);
+  };
+  viewerPeerConnection.onicecandidate = (e) => {
+    if (e.candidate) socket.emit('webrtc:ice-candidate', { to: from, candidate: e.candidate });
+  };
+  await viewerPeerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+  const answer = await viewerPeerConnection.createAnswer();
+  await viewerPeerConnection.setLocalDescription(answer);
+  socket.emit('webrtc:answer', { to: from, sdp: answer });
+});
+
+socket.on('webrtc:answer', async ({ from, sdp }) => {
+  const pc = peerConnections[from];
+  if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+});
+
+socket.on('webrtc:ice-candidate', async ({ from, candidate }) => {
+  if (!candidate) return;
+  const pc = peerConnections[from] || (from === currentSharerSocketId ? viewerPeerConnection : null);
+  if (pc) { try { await pc.addIceCandidate(candidate); } catch {} }
+});
+
+socket.on('chat:message', (msg) => {
+  renderChatMessage(msg);
+  scrollChatToBottom();
+});
+
+// ---------- Participants & admins ----------
+function isRoomAdmin(p) {
+  return p.userId === ownerId || adminIds.includes(p.userId);
+}
+
+function renderParticipants(list) {
+  lastParticipants = list;
+  document.getElementById('viewerCountLabel').textContent = '· ' + list.length + ' ონლაინ';
+
+  const adminsEl = document.getElementById('adminsList');
+  const admins = list.filter(isRoomAdmin);
+  adminsEl.innerHTML = admins.length ? '' : '<div class="empty-state">ჯერ არავინაა</div>';
+  admins.forEach((p) => {
+    const row = document.createElement('div');
+    row.className = 'participant-row';
+    const label = p.userId === ownerId ? ' (მფლობელი)' : ' (ადმინი)';
+    row.innerHTML = `<span class="avatar-dot">${escapeHtml(p.username[0].toUpperCase())}</span><span>${escapeHtml(p.username)}${label}</span>`;
+    adminsEl.appendChild(row);
+  });
+
+  const el = document.getElementById('participantsList');
+  el.innerHTML = '';
+  list.forEach((p) => {
+    const row = document.createElement('div');
+    row.className = 'participant-row';
+    row.innerHTML = `<span class="avatar-dot">${escapeHtml(p.username[0].toUpperCase())}</span><span>${escapeHtml(p.username)}</span>`;
+    if (isOwner && p.userId !== myId && !isRoomAdmin(p)) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-ghost btn-sm';
+      btn.textContent = 'ადმინად დანიშვნა';
+      btn.addEventListener('click', () => socket.emit('room:promote', p.userId));
+      row.appendChild(btn);
+    }
+    el.appendChild(row);
+  });
+}
+
+// ---------- Chat ----------
+function renderChatMessage(msg) {
+  const el = document.getElementById('chatMessages');
+  const row = document.createElement('div');
+  if (msg.system) {
+    row.className = 'chat-msg system';
+    row.textContent = msg.text;
+  } else {
+    row.className = 'chat-msg';
+    row.innerHTML = `<span class="who">${escapeHtml(msg.username)}</span>${escapeHtml(msg.text)}`;
+  }
+  el.appendChild(row);
+}
+function scrollChatToBottom() {
+  const el = document.getElementById('chatMessages');
+  el.scrollTop = el.scrollHeight;
+}
+
+const chatInput = document.getElementById('chatInput');
+function sendChat() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+  socket.emit('chat:send', text);
+  chatInput.value = '';
+}
+document.getElementById('chatSendBtn').addEventListener('click', sendChat);
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendChat();
+});
+
+// ---------- Owner: set video source ----------
+document.getElementById('loadVideoBtn').addEventListener('click', () => {
+  const url = document.getElementById('videoUrlInput').value.trim();
+  if (!url) return;
+  socket.emit('video:setSource', url);
+});
+</script>
+
+</body>
+</html>

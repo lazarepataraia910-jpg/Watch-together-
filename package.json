@@ -1,0 +1,15 @@
+{
+  "name": "watch-together",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Watch Together - synced video watch-party rooms with password-protected access",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

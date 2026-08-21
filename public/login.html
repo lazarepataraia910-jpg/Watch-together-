@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch Together — შესვლა</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-header">
+      <span class="logo">🎬</span>
+      <h1>Watch Together</h1>
+      <p>უყურე ვიდეოებს მეგობრებთან ერთად, ონლაინ, ერთდროულად</p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tabLoginBtn" type="button">შესვლა</button>
+      <button class="tab-btn" id="tabRegisterBtn" type="button">რეგისტრაცია</button>
+    </div>
+
+    <div id="errorBox" class="error-box hidden"></div>
+
+    <form id="loginForm">
+      <div class="field">
+        <label for="loginUsername">მომხმარებლის სახელი ან ელფოსტა</label>
+        <input type="text" id="loginUsername" autocomplete="username" placeholder="მაგ. giorgi93 ან you@example.com" required>
+      </div>
+      <div class="field">
+        <label for="loginPassword">პაროლი</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="loginSubmit">შესვლა</button>
+    </form>
+
+    <form id="registerForm" class="hidden">
+      <div class="field">
+        <label for="regUsername">მომხმარებლის სახელი</label>
+        <input type="text" id="regUsername" autocomplete="username" placeholder="3-20 სიმბოლო" required>
+      </div>
+      <div class="field">
+        <label for="regEmail">ელფოსტა <span style="font-weight:400">(არასავალდებულო — შეგეძლება მისითაც შეხვიდე)</span></label>
+        <input type="email" id="regEmail" autocomplete="email" placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label for="regPassword">პაროლი</label>
+        <input type="password" id="regPassword" autocomplete="new-password" placeholder="მინ. 4 სიმბოლო" required>
+      </div>
+      <div class="field">
+        <label for="regPassword2">გაიმეორე პაროლი</label>
+        <input type="password" id="regPassword2" autocomplete="new-password" placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="registerSubmit">ანგარიშის შექმნა</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const errorBox = document.getElementById('errorBox');
+const loginForm = document.getElementById('loginForm');
+const registerForm = document.getElementById('registerForm');
+const tabLoginBtn = document.getElementById('tabLoginBtn');
+const tabRegisterBtn = document.getElementById('tabRegisterBtn');
+
+const ERROR_MESSAGES = {
+  INVALID_INPUT: 'შეავსეთ ყველა ველი.',
+  BAD_USERNAME: 'სახელი უნდა იყოს 3-20 სიმბოლო (ასოები, ციფრები, _).',
+  BAD_PASSWORD: 'პაროლი უნდა იყოს მინიმუმ 4 სიმბოლო.',
+  USERNAME_TAKEN: 'ეს სახელი უკვე დაკავებულია.',
+  BAD_EMAIL: 'ელფოსტის ფორმატი არასწორია.',
+  EMAIL_TAKEN: 'ეს ელფოსტა უკვე დაკავებულია.',
+  INVALID_CREDENTIALS: 'სახელი, ელფოსტა ან პაროლი არასწორია.',
+  NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
+};
+
+function showError(code) {
+  errorBox.textContent = ERROR_MESSAGES[code] || 'დაფიქსირდა შეცდომა, სცადეთ ისევ.';
+  errorBox.classList.remove('hidden');
+}
+function hideError() {
+  errorBox.classList.add('hidden');
+}
+
+function setTab(tab) {
+  hideError();
+  const isLogin = tab === 'login';
+  tabLoginBtn.classList.toggle('active', isLogin);
+  tabRegisterBtn.classList.toggle('active', !isLogin);
+  loginForm.classList.toggle('hidden', !isLogin);
+  registerForm.classList.toggle('hidden', isLogin);
+}
+tabLoginBtn.addEventListener('click', () => setTab('login'));
+tabRegisterBtn.addEventListener('click', () => setTab('register'));
+
+async function postJSON(url, body) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return { ok: false, error: 'NETWORK' };
+  }
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (!res.ok) return { ok: false, error: data.error || 'ERROR' };
+  return data;
+}
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideError();
+  const submitBtn = document.getElementById('loginSubmit');
+  submitBtn.disabled = true;
+  const username = document.getElementById('loginUsername').value;
+  const password = document.getElementById('loginPassword').value;
+  const result = await postJSON('/api/login', { username, password });
+  submitBtn.disabled = false;
+  if (!result.ok) return showError(result.error);
+  window.location.href = '/index.html';
+});
+
+registerForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideError();
+  const p1 = document.getElementById('regPassword').value;
+  const p2 = document.getElementById('regPassword2').value;
+  if (p1 !== p2) {
+    errorBox.textContent = 'პაროლები არ ემთხვევა.';
+    errorBox.classList.remove('hidden');
+    return;
+  }
+  const submitBtn = document.getElementById('registerSubmit');
+  submitBtn.disabled = true;
+  const username = document.getElementById('regUsername').value;
+  const email = document.getElementById('regEmail').value;
+  const result = await postJSON('/api/register', { username, email, password: p1 });
+  submitBtn.disabled = false;
+  if (!result.ok) return showError(result.error);
+  window.location.href = '/index.html';
+});
+
+// Already logged in? skip straight to the dashboard.
+fetch('/api/me').then(r => {
+  if (r.ok) window.location.href = '/index.html';
+});
+</script>
+
+</body>
+</html>

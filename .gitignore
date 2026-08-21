@@ -1,0 +1,4 @@
+node_modules/
+data/users.json
+data/rooms.json
+data/sessions.json
