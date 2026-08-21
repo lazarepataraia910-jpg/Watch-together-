@@ -164,7 +164,7 @@ function buildYouTubePlayer(videoId, initialVideoState) {
 
   ytPlayer = new YT.Player('ytHolder', {
     videoId,
-    playerVars: { autoplay: 0, playsinline: 1, controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1 },
+    playerVars: { autoplay: 0, playsinline: 1, controls: 1, fs: 1 },
     events: {
       onReady: () => {
         applyRemoteVideoState(initialVideoState, true);
@@ -187,7 +187,7 @@ function buildFilePlayer(url, initialVideoState) {
   currentSourceType = 'file';
   const video = document.createElement('video');
   video.src = url;
-  video.controls = canControl;
+  video.controls = true;
   fileVideoEl = video;
   playerFrame.appendChild(video);
 
@@ -359,7 +359,7 @@ function updateControlUi() {
   document.getElementById('ownerBar').classList.toggle('hidden', !canControl);
   syncHint.textContent = canControl
     ? (isOwner ? 'შენ ხარ ოთახის მფლობელი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.' : 'შენ ხარ ადმინი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.')
-    : 'დაკვრა/პაუზა/გადახვევა/ხმა კონტროლდება მხოლოდ ადმინების მიერ და სინქრონდება ყველასთვის.';
+    : 'დაკვრა/პაუზა/გადახვევას მართავენ მხოლოდ ადმინები და სინქრონდება ყველასთვის — ხმა, ეკრანზე გადიდება და ხარისხი შენია.';
 }
 
 socket.on('room:init', (data) => {
