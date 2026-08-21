@@ -433,8 +433,8 @@ socket.on('room:error', (code) => {
 function updateControlUi() {
   document.getElementById('ownerBar').classList.toggle('hidden', !canControl);
   syncHint.textContent = canControl
-    ? (isOwner ? 'შენ ხარ ოთახის მფლობელი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.' : 'შენ ხარ ადმინი — ვიდეოს კონტროლი სინქრონდება ყველასთვის.')
-    : 'დაკვრა/პაუზა/გადახვევას მართავენ მხოლოდ ადმინები და სინქრონდება ყველასთვის — ხმა, ეკრანზე გადიდება და ხარისხი შენია.';
+    ? (isOwner ? 'შენ ხარ მფლობელი.' : 'შენ ხარ ადმინი.')
+    : 'დაკვრას მართავენ ადმინები.';
 }
 
 socket.on('room:init', (data) => {
