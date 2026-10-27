@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;500;600;700&family=Noto+Serif+Georgian:wght@600;700;800&display=swap');
-
 /* Screening-room palette: warm black, cream text, one amber "marquee" accent. */
 :root {
   --bg: #0f0d0b;
@@ -164,6 +162,9 @@ a.username-pill:hover { border-color: var(--line-strong); background: var(--surf
 .btn-danger:hover { background: rgba(255, 114, 98, 0.1); border-color: var(--danger); }
 
 .btn-block { width: 100%; }
+label.btn { margin: 0; cursor: pointer; }
+label.btn:not(.btn-primary) { color: var(--muted); }
+label.btn:not(.btn-primary):hover { color: var(--text); }
 .btn-sm { padding: 7px 14px; font-size: 13.5px; }
 
 /* ---------- Forms ---------- */
@@ -649,6 +650,7 @@ input:disabled { color: var(--muted); background: var(--surface-2); }
   font-size: 13px;
 }
 @media (max-width: 560px) {
+  .owner-bar .btn { flex: 1 1 100%; }
   #volDownBtn, #volUpBtn, #volumeValue { display: none; }
   .viewer-controls #volumeSlider { width: 60px; }
 }
@@ -782,3 +784,20 @@ input:disabled { color: var(--muted); background: var(--surface-2); }
   .profile-layout { grid-template-columns: 1fr; gap: 20px; }
   .profile-summary { position: static; }
 }
+
+/* ---------- Connection banner & 404 ---------- */
+.conn-banner {
+  padding: 8px 16px;
+  background: rgba(255, 114, 98, 0.12);
+  border-bottom: 1px solid rgba(255, 114, 98, 0.35);
+  color: var(--danger);
+  font-size: 14px;
+  text-align: center;
+}
+.not-found {
+  max-width: 560px;
+  padding-top: 96px;
+  text-align: center;
+}
+.not-found h1 { font-size: clamp(30px, 5vw, 44px); margin-bottom: 12px; }
+.not-found .muted { margin: 0 0 28px; }

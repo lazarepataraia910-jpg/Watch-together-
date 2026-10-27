@@ -8,10 +8,14 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
+const compression = require('compression');
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const DATABASE_URL = process.env.DATABASE_URL || '';
+// Render sets RENDER=true; there the site is served over https, so cookies get the Secure flag.
+const IS_PROD = !!process.env.RENDER || process.env.NODE_ENV === 'production';
+const COOKIE_FLAGS = `HttpOnly; Path=/; SameSite=Lax${IS_PROD ? '; Secure' : ''}`;
 
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -55,6 +59,7 @@ async function loadUsers() {
     friends jsonb NOT NULL DEFAULT '[]',
     created_at bigint NOT NULL
   )`);
+  await db.query('ALTER TABLE users ENABLE ROW LEVEL SECURITY');
   const { rows } = await db.query('SELECT * FROM users');
   return rows.map((r) => ({
     id: r.id,
@@ -105,10 +110,10 @@ function parseCookieHeader(header) {
 
 function setSessionCookie(res, token) {
   const maxAge = 60 * 60 * 24 * 30; // 30 days
-  res.setHeader('Set-Cookie', `watch_session=${token}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax`);
+  res.setHeader('Set-Cookie', `watch_session=${token}; Max-Age=${maxAge}; ${COOKIE_FLAGS}`);
 }
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', 'watch_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
+  res.setHeader('Set-Cookie', `watch_session=; Max-Age=0; ${COOKIE_FLAGS}`);
 }
 
 function getUserFromReq(req) {
@@ -127,8 +132,15 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// Avatars go out as a cacheable image URL rather than the inline data URL, so the participant
+// list broadcast on every join/leave stays small. ?v= changes whenever the photo changes.
+function avatarUrl(u) {
+  if (!u.avatar) return null;
+  const v = crypto.createHash('md5').update(u.avatar).digest('hex').slice(0, 10);
+  return `/api/users/${u.id}/avatar?v=${v}`;
+}
 function publicUser(u) {
-  return { id: u.id, username: u.username, avatar: u.avatar || null };
+  return { id: u.id, username: u.username, avatar: avatarUrl(u) };
 }
 function publicRoom(r) {
   const state = roomState.get(r.id);
@@ -156,13 +168,55 @@ function usernameError(name, exceptUserId) {
 }
 
 const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // Render's proxy: req.ip is the visitor, not the proxy
+
+// Security headers. Script/frame sources stay open because video players (YouTube, Twitch, Vimeo,
+// embedded pages) need them; the rest blocks plugins, base-tag tricks and framing of this site.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (IS_PROD) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  next();
+});
+
+// Slows down password guessing: at most `limit` attempts per IP per window.
+function rateLimit(limit, windowMs) {
+  const hits = new Map(); // ip -> { count, resetAt }
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, h] of hits) if (h.resetAt <= now) hits.delete(ip);
+  }, windowMs).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    let h = hits.get(req.ip);
+    if (!h || h.resetAt <= now) { h = { count: 0, resetAt: now + windowMs }; hits.set(req.ip, h); }
+    if (++h.count > limit) return res.status(429).json({ error: 'TOO_MANY_ATTEMPTS' });
+    next();
+  };
+}
+const authLimiter = rateLimit(10, 60 * 1000);
+
+app.use(compression());
 app.use(express.json({ limit: '300kb' }));
 app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
+
+app.get('/api/users/:id/avatar', (req, res) => {
+  const user = users.find((u) => u.id === req.params.id);
+  const m = user && user.avatar && user.avatar.match(AVATAR_RE);
+  if (!m) return res.status(404).end();
+  res.setHeader('Content-Type', `image/${m[1]}`);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // URL carries a content hash
+  res.end(Buffer.from(user.avatar.slice(user.avatar.indexOf(',') + 1), 'base64'));
+});
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---------- Auth ----------
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
   const { username, password, email } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'INVALID_INPUT' });
@@ -192,9 +246,11 @@ app.post('/api/register', async (req, res) => {
     usernameLower: lower,
     email: emailTrimmed,
     emailLower,
-    passwordHash: bcrypt.hashSync(password, 10),
+    passwordHash: await bcrypt.hash(password, 10),
     createdAt: Date.now(),
   };
+  // Re-check after the await: another request may have taken the name meanwhile.
+  if (usernameError(name)) return res.status(409).json({ error: 'USERNAME_TAKEN' });
   users.push(user);
   try {
     await saveUser(user);
@@ -211,14 +267,14 @@ app.post('/api/register', async (req, res) => {
   res.json({ ok: true, user: publicUser(user) });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'INVALID_INPUT' });
   }
   const identifier = username.trim().toLowerCase();
   const user = users.find((u) => u.usernameLower === identifier || (u.emailLower && u.emailLower === identifier));
-  if (!user || !user.passwordHash || !bcrypt.compareSync(password, user.passwordHash)) {
+  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
   }
   const token = crypto.randomBytes(24).toString('hex');
@@ -250,7 +306,7 @@ app.get('/api/auth/google', (req, res) => {
   if (!GOOGLE_CLIENT_ID) return res.redirect('/login.html?error=GOOGLE_NOT_CONFIGURED');
   const redirectUri = `${requestBaseUrl(req)}/api/auth/google/callback`;
   const state = crypto.randomBytes(16).toString('hex');
-  res.setHeader('Set-Cookie', `oauth_state=${state}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax`);
+  res.setHeader('Set-Cookie', `oauth_state=${state}; Max-Age=600; ${COOKIE_FLAGS}`);
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: redirectUri,
@@ -413,7 +469,7 @@ app.get('/api/rooms', (req, res) => {
   res.json({ ok: true, rooms: list.map(publicRoom) });
 });
 
-app.post('/api/rooms', requireAuth, (req, res) => {
+app.post('/api/rooms', requireAuth, async (req, res) => {
   const { name, password, videoUrl } = req.body || {};
   if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 40) {
     return res.status(400).json({ error: 'BAD_NAME' });
@@ -426,7 +482,7 @@ app.post('/api/rooms', requireAuth, (req, res) => {
     name: name.trim(),
     ownerId: req.user.id,
     ownerUsername: req.user.username,
-    passwordHash: bcrypt.hashSync(password, 10),
+    passwordHash: await bcrypt.hash(password, 10),
     videoUrl: typeof videoUrl === 'string' ? videoUrl.trim() : '',
     admins: [],
     createdAt: Date.now(),
@@ -437,13 +493,13 @@ app.post('/api/rooms', requireAuth, (req, res) => {
   res.json({ ok: true, room: publicRoom(room) });
 });
 
-app.post('/api/rooms/:id/join', requireAuth, (req, res) => {
+app.post('/api/rooms/:id/join', authLimiter, requireAuth, async (req, res) => {
   const room = rooms.find((r) => r.id === req.params.id);
   if (!room) return res.status(404).json({ error: 'NOT_FOUND' });
   const { password } = req.body || {};
   const isOwner = room.ownerId === req.user.id;
   if (!isOwner) {
-    if (typeof password !== 'string' || !bcrypt.compareSync(password, room.passwordHash)) {
+    if (typeof password !== 'string' || !(await bcrypt.compare(password, room.passwordHash))) {
       return res.status(403).json({ error: 'WRONG_PASSWORD' });
     }
   }
@@ -463,8 +519,42 @@ app.delete('/api/rooms/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// YouTube channel live links (/@name/live, /channel/ID/live, /c/name/live) have no video id in
+// the URL, so look up the current stream's watch URL once on the server (only youtube.com is fetched).
+const YT_CHANNEL_LIVE_RE = /^https?:\/\/(?:www\.|m\.)?youtube\.com\/(?:@[\w.-]+|channel\/[\w-]+|c\/[\w.-]+|user\/[\w.-]+)\/live\/?(?:[?#].*)?$/i;
+async function resolveVideoUrl(url) {
+  if (!YT_CHANNEL_LIVE_RE.test(url)) return url;
+  try {
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en' }, signal: AbortSignal.timeout(8000) });
+    const html = await res.text();
+    const m = html.match(/<link rel="canonical" href="https:\/\/www\.youtube\.com\/watch\?v=([\w-]{11})"/);
+    return m ? `https://www.youtube.com/watch?v=${m[1]}` : url;
+  } catch {
+    return url;
+  }
+}
+
+app.use('/api', (req, res) => res.status(404).json({ error: 'NOT_FOUND' }));
+app.use((req, res) => res.status(404).sendFile(path.join(__dirname, 'public', '404.html')));
+app.use((err, req, res, next) => {
+  if (!err.status || err.status >= 500) console.error(err);
+  res.status(err.status || 500).json({ error: err.status === 400 ? 'INVALID_INPUT' : 'SERVER_ERROR' });
+});
+
 const server = http.createServer(app);
-const io = new Server(server);
+// Only accept socket connections from this site's own pages (blocks other sites from using a
+// visitor's login cookie to open a socket in their name).
+const io = new Server(server, {
+  allowRequest: (req, cb) => {
+    const origin = req.headers.origin;
+    if (!origin) return cb(null, true);
+    try {
+      cb(null, new URL(origin).host === (req.headers['x-forwarded-host'] || req.headers.host));
+    } catch {
+      cb(null, false);
+    }
+  },
+});
 
 io.use((socket, next) => {
   const cookies = parseCookieHeader(socket.handshake.headers.cookie);
@@ -510,7 +600,7 @@ io.on('connection', (socket) => {
       });
     }
     const state = roomState.get(roomId);
-    state.participants.set(socket.id, { userId: socket.user.id, username: socket.user.username, avatar: socket.user.avatar || null });
+    state.participants.set(socket.id, { userId: socket.user.id, username: socket.user.username, avatar: avatarUrl(socket.user) });
 
     socket.emit('room:init', {
       roomName: room.name,
@@ -530,29 +620,57 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('room:participants', [...state.participants.values()]);
   });
 
-  socket.on('video:setSource', (url) => {
+  // Clients measure their clock offset against the server so "time X at moment T" means the
+  // same thing for everyone, regardless of how wrong each device's clock is.
+  socket.on('time:ping', (cb) => { if (typeof cb === 'function') cb(Date.now()); });
+
+  socket.on('video:setSource', async (url) => {
     const state = getState();
-    if (!state || !currentRoomId) return;
+    const roomId = currentRoomId;
+    if (!state || !roomId) return;
     if (!canControl()) return;
-    if (typeof url !== 'string') return;
+    if (typeof url !== 'string' || url.length > 2000) return;
+    if (url.trim() && !/^https?:\/\//i.test(url.trim())) return;
+    const resolved = await resolveVideoUrl(url.trim());
+    if (getState() !== state) return; // left the room while resolving
     if (state.screenSharer) {
       state.screenSharer = null;
-      io.to(currentRoomId).emit('screen:stopped');
+      io.to(roomId).emit('screen:stopped');
     }
-    state.video = { url: url.trim(), playing: false, time: 0, updatedAt: Date.now() };
-    io.to(currentRoomId).emit('video:source', state.video);
+    state.leader = socket.id;
+    state.video = { url: resolved, playing: false, time: 0, updatedAt: Date.now() };
+    io.to(roomId).emit('video:source', state.video);
   });
 
-  function updateVideoState(partial) {
+  // payload: { time, at } where `at` is the sender's server-clock timestamp of that position.
+  // Older clients sent a bare number; that still works, just without latency compensation.
+  function updateVideoState(partial, payload) {
     const state = getState();
     if (!state) return;
-    state.video = { ...state.video, ...partial, updatedAt: Date.now() };
+    const now = Date.now();
+    const at = payload && Number(payload.at);
+    const updatedAt = at && Math.abs(at - now) < 5000 ? at : now;
+    state.video = { ...state.video, ...partial, updatedAt };
     socket.to(currentRoomId).emit('video:state', state.video);
   }
+  function timeOf(payload) {
+    const t = Number(payload && typeof payload === 'object' ? payload.time : payload);
+    return Number.isFinite(t) && t >= 0 ? t : 0;
+  }
+  // Whoever last pressed play/pause/seek is the leader; only their periodic sync is trusted,
+  // so two admins with slightly different positions don't fight each other.
+  function takeLead() { const st = getState(); if (st) st.leader = socket.id; }
 
-  socket.on('video:play', (time) => { if (canControl()) updateVideoState({ playing: true, time: Number(time) || 0 }); });
-  socket.on('video:pause', (time) => { if (canControl()) updateVideoState({ playing: false, time: Number(time) || 0 }); });
-  socket.on('video:seek', (time) => { if (canControl()) updateVideoState({ time: Number(time) || 0 }); });
+  socket.on('video:play', (p) => { if (canControl()) { takeLead(); updateVideoState({ playing: true, time: timeOf(p) }, p); } });
+  socket.on('video:pause', (p) => { if (canControl()) { takeLead(); updateVideoState({ playing: false, time: timeOf(p) }, p); } });
+  socket.on('video:seek', (p) => { if (canControl()) { takeLead(); updateVideoState({ time: timeOf(p) }, p); } });
+  socket.on('video:sync', (p) => {
+    const state = getState();
+    if (!state || !canControl() || !state.video.playing) return;
+    if (state.leader && state.leader !== socket.id) return;
+    state.leader = socket.id;
+    updateVideoState({ time: timeOf(p) }, p);
+  });
 
   socket.on('screen:start', () => {
     const state = getState();
@@ -576,18 +694,25 @@ io.on('connection', (socket) => {
     io.to(state.screenSharer.socketId).emit('webrtc:request', { viewerSocketId: socket.id, viewerUsername: socket.user.username });
   });
 
+  // Signals may only go to someone in the same room, and one side must be the current sharer.
+  function canSignal(to) {
+    const state = getState();
+    if (typeof to !== 'string' || !state || !state.screenSharer || !state.participants.has(to)) return false;
+    return state.screenSharer.socketId === socket.id || state.screenSharer.socketId === to;
+  }
+
   socket.on('webrtc:offer', ({ to, sdp } = {}) => {
-    if (typeof to !== 'string') return;
+    if (!canSignal(to)) return;
     io.to(to).emit('webrtc:offer', { from: socket.id, sdp });
   });
 
   socket.on('webrtc:answer', ({ to, sdp } = {}) => {
-    if (typeof to !== 'string') return;
+    if (!canSignal(to)) return;
     io.to(to).emit('webrtc:answer', { from: socket.id, sdp });
   });
 
   socket.on('webrtc:ice-candidate', ({ to, candidate } = {}) => {
-    if (typeof to !== 'string') return;
+    if (!canSignal(to)) return;
     io.to(to).emit('webrtc:ice-candidate', { from: socket.id, candidate });
   });
 

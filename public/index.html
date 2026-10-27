@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Watch Together — ოთახები</title>
+<title>Watch Together — ვიდეოს ერთად ყურება</title>
+<meta name="description" content="შექმენი პაროლიანი ოთახი და უყურე YouTube-ს, Twitch-ს, ლაივებს ან საკუთარ ვიდეოებს მეგობრებთან ერთად, ერთდროულად, ჩატით.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;500;600;700&family=Noto+Serif+Georgian:wght@600;700;800&display=swap">
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -111,6 +116,8 @@ const ERROR_MESSAGES = {
   BAD_EMAIL: 'ჩაწერე ელფოსტა.',
   CANNOT_ADD_SELF: 'საკუთარ თავს ვერ დაამატებ.',
   ALREADY_FRIEND: 'ეს მეგობარი უკვე დამატებულია.',
+  TOO_MANY_ATTEMPTS: 'ძალიან ბევრი მცდელობა — სცადე ერთ წუთში.',
+  DB_ERROR: 'სერვერმა მონაცემები ვერ შეინახა — სცადე ცოტა ხანში.',
 };
 function friendErrText(code) {
   if (code === 'NOT_FOUND') return 'ამ ელფოსტით რეგისტრირებული მომხმარებელი ვერ მოიძებნა.';

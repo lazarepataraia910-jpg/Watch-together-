@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Watch Together — შესვლა</title>
+<meta name="description" content="შედი Watch Together-ში — უყურე ვიდეოებს და ლაივებს მეგობრებთან ერთად, სინქრონულად.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;500;600;700&family=Noto+Serif+Georgian:wght@600;700;800&display=swap">
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -96,6 +101,9 @@ const ERROR_MESSAGES = {
   NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
   GOOGLE_AUTH_FAILED: 'Google-ით შესვლა ვერ მოხერხდა, სცადეთ ისევ.',
   GOOGLE_NOT_CONFIGURED: 'Google-ით შესვლა ჯერ არ არის ჩართული ამ საიტზე.',
+  TOO_MANY_ATTEMPTS: 'ძალიან ბევრი მცდელობა — სცადე ერთ წუთში.',
+  DB_ERROR: 'სერვერმა მონაცემები ვერ შეინახა — სცადე ცოტა ხანში.',
+  SERVER_ERROR: 'სერვერის შეცდომა — სცადე ცოტა ხანში.',
 };
 
 function showError(code) {
