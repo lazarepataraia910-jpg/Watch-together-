@@ -20,7 +20,6 @@ const COOKIE_FLAGS = `HttpOnly; Path=/; SameSite=Lax${IS_PROD ? '; Secure' : ''}
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const ROOMS_FILE = path.join(DATA_DIR, 'rooms.json');
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -87,10 +86,49 @@ async function saveUser(u) {
   );
 }
 
-// token -> userId, persisted so a server restart doesn't log everyone out
-const sessions = new Map(loadJSON(SESSIONS_FILE).map((s) => [s.token, s.userId]));
-function saveSessions() {
-  saveJSON(SESSIONS_FILE, [...sessions.entries()].map(([token, userId]) => ({ token, userId })));
+// ---------- Sessions: signed cookies, nothing stored on the server ----------
+// The cookie is "<userId>.<expiry>.<signature>". Only this server can produce a valid signature,
+// and since nothing is stored, a deploy/restart (which wipes Render's disk) doesn't log anyone out.
+// The key must stay the same across deploys: SESSION_SECRET if set, otherwise derived from the
+// Google client secret (already a stable secret on Render), otherwise a local file for dev.
+const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days, in seconds
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || (GOOGLE_CLIENT_SECRET && crypto.createHash('sha256').update('watch-together-session:' + GOOGLE_CLIENT_SECRET).digest('hex'))
+  || localSessionSecret();
+if (IS_PROD && !process.env.SESSION_SECRET && !GOOGLE_CLIENT_SECRET) {
+  console.warn('SESSION_SECRET is not set: logins will not survive a redeploy. Add it in Render > Environment.');
+}
+
+function localSessionSecret() {
+  const file = path.join(DATA_DIR, 'session-secret');
+  try {
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch {
+    const secret = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(file, secret);
+    return secret;
+  }
+}
+
+function signSession(userId) {
+  const expires = (Math.floor(Date.now() / 1000) + SESSION_MAX_AGE).toString(36);
+  const payload = `${userId}.${expires}`;
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+// Returns the userId for a valid, unexpired token, else null.
+function verifySession(token) {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [userId, expires, sig] = parts;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(`${userId}.${expires}`).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  if (parseInt(expires, 36) * 1000 < Date.now()) return null;
+  return userId;
 }
 // roomId -> Set(userId) who verified the room password (or own it)
 const roomAccess = new Map();
@@ -108,9 +146,8 @@ function parseCookieHeader(header) {
   return out;
 }
 
-function setSessionCookie(res, token) {
-  const maxAge = 60 * 60 * 24 * 30; // 30 days
-  res.setHeader('Set-Cookie', `watch_session=${token}; Max-Age=${maxAge}; ${COOKIE_FLAGS}`);
+function setSessionCookie(res, userId) {
+  res.setHeader('Set-Cookie', `watch_session=${signSession(userId)}; Max-Age=${SESSION_MAX_AGE}; ${COOKIE_FLAGS}`);
 }
 function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `watch_session=; Max-Age=0; ${COOKIE_FLAGS}`);
@@ -118,9 +155,7 @@ function clearSessionCookie(res) {
 
 function getUserFromReq(req) {
   const cookies = parseCookieHeader(req.headers.cookie);
-  const token = cookies['watch_session'];
-  if (!token) return null;
-  const userId = sessions.get(token);
+  const userId = verifySession(cookies['watch_session']);
   if (!userId) return null;
   return users.find((u) => u.id === userId) || null;
 }
@@ -260,10 +295,7 @@ app.post('/api/register', authLimiter, async (req, res) => {
     return res.status(500).json({ error: 'DB_ERROR' });
   }
 
-  const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, user.id);
-  saveSessions();
-  setSessionCookie(res, token);
+  setSessionCookie(res, user.id);
   res.json({ ok: true, user: publicUser(user) });
 });
 
@@ -277,20 +309,11 @@ app.post('/api/login', authLimiter, async (req, res) => {
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
     return res.status(401).json({ error: 'INVALID_CREDENTIALS' });
   }
-  const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, user.id);
-  saveSessions();
-  setSessionCookie(res, token);
+  setSessionCookie(res, user.id);
   res.json({ ok: true, user: publicUser(user) });
 });
 
 app.post('/api/logout', (req, res) => {
-  const cookies = parseCookieHeader(req.headers.cookie);
-  const token = cookies['watch_session'];
-  if (token) {
-    sessions.delete(token);
-    saveSessions();
-  }
   clearSessionCookie(res);
   res.json({ ok: true });
 });
@@ -376,10 +399,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
       }
     }
 
-    const token = crypto.randomBytes(24).toString('hex');
-    sessions.set(token, user.id);
-    saveSessions();
-    setSessionCookie(res, token);
+    setSessionCookie(res, user.id);
     res.redirect('/index.html');
   } catch {
     res.redirect('/login.html?error=GOOGLE_AUTH_FAILED');
@@ -558,8 +578,7 @@ const io = new Server(server, {
 
 io.use((socket, next) => {
   const cookies = parseCookieHeader(socket.handshake.headers.cookie);
-  const token = cookies['watch_session'];
-  const userId = token && sessions.get(token);
+  const userId = verifySession(cookies['watch_session']);
   const user = userId && users.find((u) => u.id === userId);
   if (!user) return next(new Error('AUTH_REQUIRED'));
   socket.user = user;
