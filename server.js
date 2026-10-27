@@ -7,9 +7,11 @@ const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
+const { Pool } = require('pg');
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const DATABASE_URL = process.env.DATABASE_URL || '';
 
 const DATA_DIR = path.join(__dirname, 'data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -30,8 +32,55 @@ function saveJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-let users = loadJSON(USERS_FILE); // [{id, username, usernameLower, email, emailLower, passwordHash, friends, createdAt}]
+let users = []; // [{id, username, usernameLower, email, emailLower, passwordHash, avatar, friends, createdAt}], filled by loadUsers() at startup
 let rooms = loadJSON(ROOMS_FILE); // [{id, name, ownerId, ownerUsername, passwordHash, videoUrl, admins, createdAt}]
+
+// ---------- Users database ----------
+// With DATABASE_URL set (production), users live in a Postgres "users" table so they survive
+// Render wiping the disk on every deploy/restart. Without it (local dev), data/users.json is used.
+const db = DATABASE_URL
+  ? new Pool({ connectionString: DATABASE_URL, ssl: /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL) ? false : { rejectUnauthorized: false } })
+  : null;
+
+async function loadUsers() {
+  if (!db) return loadJSON(USERS_FILE);
+  await db.query(`CREATE TABLE IF NOT EXISTS users (
+    id text PRIMARY KEY,
+    username text NOT NULL,
+    username_lower text NOT NULL UNIQUE,
+    email text NOT NULL DEFAULT '',
+    email_lower text NOT NULL DEFAULT '',
+    password_hash text,
+    avatar text,
+    friends jsonb NOT NULL DEFAULT '[]',
+    created_at bigint NOT NULL
+  )`);
+  const { rows } = await db.query('SELECT * FROM users');
+  return rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    usernameLower: r.username_lower,
+    email: r.email,
+    emailLower: r.email_lower,
+    passwordHash: r.password_hash,
+    avatar: r.avatar || undefined,
+    friends: r.friends,
+    createdAt: Number(r.created_at),
+  }));
+}
+
+// Writes one user (insert or update). Throws if the database write fails.
+async function saveUser(u) {
+  if (!db) return saveJSON(USERS_FILE, users);
+  await db.query(
+    `INSERT INTO users (id, username, username_lower, email, email_lower, password_hash, avatar, friends, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (id) DO UPDATE SET username = $2, username_lower = $3, email = $4, email_lower = $5,
+       password_hash = $6, avatar = $7, friends = $8`,
+    [u.id, u.username, u.usernameLower, u.email || '', u.emailLower || '', u.passwordHash || null, u.avatar || null,
+      JSON.stringify(u.friends || []), u.createdAt],
+  );
+}
 
 // token -> userId, persisted so a server restart doesn't log everyone out
 const sessions = new Map(loadJSON(SESSIONS_FILE).map((s) => [s.token, s.userId]));
@@ -113,7 +162,7 @@ app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }))
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---------- Auth ----------
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { username, password, email } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'INVALID_INPUT' });
@@ -147,7 +196,13 @@ app.post('/api/register', (req, res) => {
     createdAt: Date.now(),
   };
   users.push(user);
-  saveJSON(USERS_FILE, users);
+  try {
+    await saveUser(user);
+  } catch (err) {
+    console.error('register: saving user failed:', err.message);
+    users = users.filter((u) => u !== user);
+    return res.status(500).json({ error: 'DB_ERROR' });
+  }
 
   const token = crypto.randomBytes(24).toString('hex');
   sessions.set(token, user.id);
@@ -257,7 +312,12 @@ app.get('/api/auth/google/callback', async (req, res) => {
         createdAt: Date.now(),
       };
       users.push(user);
-      saveJSON(USERS_FILE, users);
+      try {
+        await saveUser(user);
+      } catch (err) {
+        users = users.filter((u) => u !== user);
+        throw err;
+      }
     }
 
     const token = crypto.randomBytes(24).toString('hex');
@@ -271,11 +331,11 @@ app.get('/api/auth/google/callback', async (req, res) => {
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ ok: true, user: { ...publicUser(req.user), email: req.user.email || '', hasPassword: !!req.user.passwordHash } });
+  res.json({ ok: true, user: { ...publicUser(req.user), email: req.user.email || '' } });
 });
 
 // ---------- Profile settings ----------
-app.patch('/api/me', requireAuth, (req, res) => {
+app.patch('/api/me', requireAuth, async (req, res) => {
   const { username, avatar } = req.body || {};
   if (username !== undefined) {
     if (typeof username !== 'string') return res.status(400).json({ error: 'INVALID_INPUT' });
@@ -296,22 +356,13 @@ app.patch('/api/me', requireAuth, (req, res) => {
       req.user.avatar = avatar;
     }
   }
-  saveJSON(USERS_FILE, users);
+  try {
+    await saveUser(req.user);
+  } catch (err) {
+    console.error('profile: saving user failed:', err.message);
+    return res.status(500).json({ error: 'DB_ERROR' });
+  }
   res.json({ ok: true, user: publicUser(req.user) });
-});
-
-app.post('/api/me/password', requireAuth, (req, res) => {
-  const { currentPassword, newPassword } = req.body || {};
-  if (typeof newPassword !== 'string' || newPassword.length < 4) {
-    return res.status(400).json({ error: 'BAD_PASSWORD' });
-  }
-  // Google-only accounts have no password yet, so they can set one without the current one.
-  if (req.user.passwordHash && (typeof currentPassword !== 'string' || !bcrypt.compareSync(currentPassword, req.user.passwordHash))) {
-    return res.status(403).json({ error: 'WRONG_PASSWORD' });
-  }
-  req.user.passwordHash = bcrypt.hashSync(newPassword, 10);
-  saveJSON(USERS_FILE, users);
-  res.json({ ok: true });
 });
 
 // ---------- Friends ----------
@@ -321,7 +372,7 @@ app.get('/api/friends', requireAuth, (req, res) => {
   res.json({ ok: true, friends: list });
 });
 
-app.post('/api/friends', requireAuth, (req, res) => {
+app.post('/api/friends', requireAuth, async (req, res) => {
   const { email } = req.body || {};
   if (typeof email !== 'string' || !email.trim()) {
     return res.status(400).json({ error: 'BAD_EMAIL' });
@@ -333,13 +384,22 @@ app.post('/api/friends', requireAuth, (req, res) => {
   if (!req.user.friends) req.user.friends = [];
   if (req.user.friends.includes(friend.id)) return res.status(409).json({ error: 'ALREADY_FRIEND' });
   req.user.friends.push(friend.id);
-  saveJSON(USERS_FILE, users);
+  try {
+    await saveUser(req.user);
+  } catch (err) {
+    req.user.friends = req.user.friends.filter((id) => id !== friend.id);
+    return res.status(500).json({ error: 'DB_ERROR' });
+  }
   res.json({ ok: true, friend: publicUser(friend) });
 });
 
-app.delete('/api/friends/:id', requireAuth, (req, res) => {
+app.delete('/api/friends/:id', requireAuth, async (req, res) => {
   req.user.friends = (req.user.friends || []).filter((id) => id !== req.params.id);
-  saveJSON(USERS_FILE, users);
+  try {
+    await saveUser(req.user);
+  } catch (err) {
+    return res.status(500).json({ error: 'DB_ERROR' });
+  }
   res.json({ ok: true });
 });
 
@@ -573,6 +633,14 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Watch Together listening on http://localhost:${PORT}`);
-});
+loadUsers()
+  .then((loaded) => {
+    users = loaded;
+    server.listen(PORT, () => {
+      console.log(`Watch Together listening on http://localhost:${PORT} (users: ${db ? 'Postgres' : 'data/users.json'})`);
+    });
+  })
+  .catch((err) => {
+    console.error('Could not load users from the database:', err.message);
+    process.exit(1);
+  });

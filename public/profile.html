@@ -55,26 +55,6 @@
         </form>
       </div>
 
-      <div class="card">
-        <h2>პაროლის შეცვლა</h2>
-        <p class="hint">მინიმუმ 4 სიმბოლო.</p>
-        <div id="passMsg" class="error-box hidden"></div>
-        <form id="passForm">
-          <div class="field" id="currentPassField">
-            <label for="currentPass">ახლანდელი პაროლი</label>
-            <input type="password" id="currentPass" autocomplete="current-password">
-          </div>
-          <div class="field">
-            <label for="newPass">ახალი პაროლი</label>
-            <input type="password" id="newPass" autocomplete="new-password" minlength="4" required>
-          </div>
-          <div class="field">
-            <label for="newPass2">გაიმეორე ახალი პაროლი</label>
-            <input type="password" id="newPass2" autocomplete="new-password" minlength="4" required>
-          </div>
-          <button type="submit" class="btn btn-primary">პაროლის შეცვლა</button>
-        </form>
-      </div>
     </div>
   </div>
 </main>
@@ -84,9 +64,6 @@ const ERRORS = {
   BAD_USERNAME: 'სახელი უნდა იყოს 3-20 სიმბოლო: ასოები, ციფრები ან _.',
   USERNAME_TAKEN: 'ეს სახელი უკვე დაკავებულია.',
   BAD_AVATAR: 'ფოტო ვერ შეინახა — სცადე სხვა სურათი.',
-  BAD_PASSWORD: 'პაროლი უნდა იყოს მინიმუმ 4 სიმბოლო.',
-  WRONG_PASSWORD: 'ახლანდელი პაროლი არასწორია.',
-  MISMATCH: 'ახალი პაროლები არ ემთხვევა.',
   NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
 };
 
@@ -137,8 +114,6 @@ async function init() {
   me = (await res.json()).user;
   document.getElementById('usernameInput').value = me.username;
   document.getElementById('emailInput').value = me.email || '—';
-  // Google-only accounts have no password yet, so they just set one.
-  document.getElementById('currentPassField').classList.toggle('hidden', !me.hasPassword);
   renderAvatar();
 }
 
@@ -188,18 +163,6 @@ document.getElementById('nameForm').addEventListener('submit', async (e) => {
   me.username = result.user.username;
   renderAvatar();
   showMsg('nameMsg', 'სახელი შეიცვალა ✓', true);
-});
-
-document.getElementById('passForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const newPassword = document.getElementById('newPass').value;
-  if (newPassword !== document.getElementById('newPass2').value) return showMsg('passMsg', errText('MISMATCH'));
-  const result = await send('/api/me/password', 'POST', { currentPassword: document.getElementById('currentPass').value, newPassword });
-  if (!result.ok) return showMsg('passMsg', errText(result.error));
-  e.target.reset();
-  me.hasPassword = true;
-  document.getElementById('currentPassField').classList.remove('hidden');
-  showMsg('passMsg', 'პაროლი შეიცვალა ✓', true);
 });
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
