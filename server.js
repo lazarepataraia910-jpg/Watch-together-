@@ -79,7 +79,7 @@ function requireAuth(req, res, next) {
 }
 
 function publicUser(u) {
-  return { id: u.id, username: u.username };
+  return { id: u.id, username: u.username, avatar: u.avatar || null };
 }
 function publicRoom(r) {
   const state = roomState.get(r.id);
@@ -94,10 +94,21 @@ function publicRoom(r) {
 }
 
 const USERNAME_RE = /^[a-zA-Z0-9_Ⴀ-ჿ]+$/;
+// Avatars are resized client-side and stored inline in users.json as a small data URL.
+const AVATAR_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+const AVATAR_MAX_LEN = 200 * 1024;
+
+// Returns an error code, or null if the username is valid and free.
+function usernameError(name, exceptUserId) {
+  if (name.length < 3 || name.length > 20 || !USERNAME_RE.test(name)) return 'BAD_USERNAME';
+  const lower = name.toLowerCase();
+  if (users.some((u) => u.usernameLower === lower && u.id !== exceptUserId)) return 'USERNAME_TAKEN';
+  return null;
+}
 
 const app = express();
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'), { index: 'login.html' }));
+app.use(express.json({ limit: '300kb' }));
+app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -108,16 +119,12 @@ app.post('/api/register', (req, res) => {
     return res.status(400).json({ error: 'INVALID_INPUT' });
   }
   const name = username.trim();
-  if (name.length < 3 || name.length > 20 || !USERNAME_RE.test(name)) {
-    return res.status(400).json({ error: 'BAD_USERNAME' });
-  }
+  const nameErr = usernameError(name);
+  if (nameErr) return res.status(nameErr === 'USERNAME_TAKEN' ? 409 : 400).json({ error: nameErr });
   if (password.length < 4) {
     return res.status(400).json({ error: 'BAD_PASSWORD' });
   }
   const lower = name.toLowerCase();
-  if (users.some((u) => u.usernameLower === lower)) {
-    return res.status(409).json({ error: 'USERNAME_TAKEN' });
-  }
   let emailTrimmed = '';
   let emailLower = '';
   if (typeof email === 'string' && email.trim()) {
@@ -264,7 +271,47 @@ app.get('/api/auth/google/callback', async (req, res) => {
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ ok: true, user: { ...publicUser(req.user), email: req.user.email || '', hasPassword: !!req.user.passwordHash } });
+});
+
+// ---------- Profile settings ----------
+app.patch('/api/me', requireAuth, (req, res) => {
+  const { username, avatar } = req.body || {};
+  if (username !== undefined) {
+    if (typeof username !== 'string') return res.status(400).json({ error: 'INVALID_INPUT' });
+    const name = username.trim();
+    const nameErr = usernameError(name, req.user.id);
+    if (nameErr) return res.status(nameErr === 'USERNAME_TAKEN' ? 409 : 400).json({ error: nameErr });
+    req.user.username = name;
+    req.user.usernameLower = name.toLowerCase();
+    rooms.forEach((r) => { if (r.ownerId === req.user.id) r.ownerUsername = name; });
+    saveJSON(ROOMS_FILE, rooms);
+  }
+  if (avatar !== undefined) {
+    if (avatar === null) {
+      delete req.user.avatar;
+    } else if (typeof avatar !== 'string' || avatar.length > AVATAR_MAX_LEN || !AVATAR_RE.test(avatar)) {
+      return res.status(400).json({ error: 'BAD_AVATAR' });
+    } else {
+      req.user.avatar = avatar;
+    }
+  }
+  saveJSON(USERS_FILE, users);
   res.json({ ok: true, user: publicUser(req.user) });
+});
+
+app.post('/api/me/password', requireAuth, (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (typeof newPassword !== 'string' || newPassword.length < 4) {
+    return res.status(400).json({ error: 'BAD_PASSWORD' });
+  }
+  // Google-only accounts have no password yet, so they can set one without the current one.
+  if (req.user.passwordHash && (typeof currentPassword !== 'string' || !bcrypt.compareSync(currentPassword, req.user.passwordHash))) {
+    return res.status(403).json({ error: 'WRONG_PASSWORD' });
+  }
+  req.user.passwordHash = bcrypt.hashSync(newPassword, 10);
+  saveJSON(USERS_FILE, users);
+  res.json({ ok: true });
 });
 
 // ---------- Friends ----------
@@ -297,7 +344,8 @@ app.delete('/api/friends/:id', requireAuth, (req, res) => {
 });
 
 // ---------- Rooms ----------
-app.get('/api/rooms', requireAuth, (req, res) => {
+// Public so guests can browse rooms before logging in; joining still requires auth.
+app.get('/api/rooms', (req, res) => {
   const q = (req.query.search || '').toString().trim().toLowerCase();
   let list = rooms;
   if (q) list = list.filter((r) => r.name.toLowerCase().includes(q));
@@ -402,13 +450,13 @@ io.on('connection', (socket) => {
       });
     }
     const state = roomState.get(roomId);
-    state.participants.set(socket.id, { userId: socket.user.id, username: socket.user.username });
+    state.participants.set(socket.id, { userId: socket.user.id, username: socket.user.username, avatar: socket.user.avatar || null });
 
     socket.emit('room:init', {
       roomName: room.name,
       ownerId: room.ownerId,
       admins: room.admins || [],
-      me: { id: socket.user.id, username: socket.user.username },
+      me: publicUser(socket.user),
       video: state.video,
       chat: state.chat.slice(-100),
       participants: [...state.participants.values()],

@@ -18,16 +18,23 @@
 
 <div class="room-shell">
   <div class="player-col">
+    <div class="player-wrap" id="playerWrap">
     <div class="player-frame" id="playerFrame">
       <div class="player-placeholder" id="playerPlaceholder">ვიდეო ჯერ არ არის დამატებული</div>
     </div>
 
     <div class="viewer-controls hidden" id="viewerControls">
-      <button class="btn btn-ghost btn-sm" id="muteBtn" type="button">🔊</button>
-      <input type="range" id="volumeSlider" min="0" max="100" value="100">
-      <button class="btn btn-ghost btn-sm hidden" id="ccBtn" type="button">CC</button>
-      <select id="qualitySelect" class="hidden"></select>
-      <button class="btn btn-ghost btn-sm" id="fullscreenBtn" type="button">⛶ სრულ ეკრანზე</button>
+      <button class="pc-btn" id="muteBtn" type="button" title="ხმის გათიშვა" aria-label="ხმის გათიშვა"></button>
+      <button class="pc-btn" id="volDownBtn" type="button" title="ხმის დაწევა" aria-label="ხმის დაწევა">−</button>
+      <input type="range" id="volumeSlider" min="0" max="100" value="100" aria-label="ხმა">
+      <button class="pc-btn" id="volUpBtn" type="button" title="ხმის აწევა" aria-label="ხმის აწევა">+</button>
+      <span class="pc-text" id="volumeValue">100%</span>
+      <span class="pc-text" id="timeLabel"></span>
+      <span class="pc-spacer"></span>
+      <button class="pc-btn hidden" id="ccBtn" type="button" title="სუბტიტრები">CC</button>
+      <label class="pc-quality hidden" id="qualityWrap" title="ხარისხი">⚙ <select id="qualitySelect" aria-label="ხარისხი"></select></label>
+      <button class="pc-btn" id="fullscreenBtn" type="button" title="გადიდება" aria-label="გადიდება"></button>
+    </div>
     </div>
 
     <div class="owner-bar hidden" id="ownerBar">
@@ -109,32 +116,55 @@ const muteBtn = document.getElementById('muteBtn');
 const volumeSlider = document.getElementById('volumeSlider');
 const ccBtn = document.getElementById('ccBtn');
 const qualitySelect = document.getElementById('qualitySelect');
+const qualityWrap = document.getElementById('qualityWrap');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
+const playerWrap = document.getElementById('playerWrap');
+const volumeValue = document.getElementById('volumeValue');
 let ccOn = false;
 
+const YT_QUALITY_LABELS = {
+  tiny: '144p', small: '240p', medium: '360p', large: '480p', hd720: '720p',
+  hd1080: '1080p', hd1440: '1440p', hd2160: '4K', highres: 'მაქს.', auto: 'ავტო',
+};
+
 function updateViewerControlsVisibility() {
-  const show = !canControl && (currentSourceType === 'youtube' || currentSourceType === 'twitch' || currentSourceType === 'file');
+  const show = currentSourceType === 'youtube' || currentSourceType === 'twitch' || currentSourceType === 'file';
   viewerControls.classList.toggle('hidden', !show);
+  // Admins keep the native player controls at the bottom, so their bar sits below the video instead of over it.
+  playerWrap.classList.toggle('overlay', !canControl);
 }
 
+const ICONS = {
+  volume: '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>',
+  muted: '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm18.6 6.2-1.4 1.4L17 13.4l-3.2 3.2-1.4-1.4L15.6 12l-3.2-3.2 1.4-1.4L17 10.6l3.2-3.2 1.4 1.4L18.4 12z"/></svg>',
+  expand: '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>',
+  shrink: '<svg viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>',
+};
+
 function refreshMuteIcon(muted) {
-  muteBtn.textContent = muted ? '🔇' : '🔊';
+  muteBtn.innerHTML = muted ? ICONS.muted : ICONS.volume;
+}
+refreshMuteIcon(false);
+
+function setVolumeSlider(v) {
+  volumeSlider.value = v;
+  volumeValue.textContent = Math.round(v) + '%';
 }
 
 function populateQualitySelect(levels, current) {
   if (!levels || !levels.length) {
-    qualitySelect.classList.add('hidden');
+    qualityWrap.classList.add('hidden');
     return;
   }
   qualitySelect.innerHTML = '';
   levels.forEach((q) => {
     const opt = document.createElement('option');
     opt.value = q;
-    opt.textContent = q;
+    opt.textContent = YT_QUALITY_LABELS[q] || q;
     if (q === current) opt.selected = true;
     qualitySelect.appendChild(opt);
   });
-  qualitySelect.classList.remove('hidden');
+  qualityWrap.classList.remove('hidden');
 }
 
 function setupViewerControlsForYouTube() {
@@ -142,9 +172,15 @@ function setupViewerControlsForYouTube() {
   ccOn = false;
   ccBtn.classList.remove('hidden');
   ccBtn.classList.remove('active');
-  if (canControl || !ytPlayer) return;
+  if (!ytPlayer) return;
   refreshMuteIcon(ytPlayer.isMuted());
-  volumeSlider.value = ytPlayer.getVolume();
+  setVolumeSlider(ytPlayer.getVolume());
+  refreshYouTubeQualities();
+}
+
+// Quality levels are only known once the video starts buffering, so this also runs on PLAYING.
+function refreshYouTubeQualities() {
+  if (!ytPlayer) return;
   const levels = ytPlayer.getAvailableQualityLevels ? ytPlayer.getAvailableQualityLevels() : [];
   populateQualitySelect(levels, ytPlayer.getPlaybackQuality ? ytPlayer.getPlaybackQuality() : null);
 }
@@ -152,9 +188,14 @@ function setupViewerControlsForYouTube() {
 function setupViewerControlsForTwitch() {
   updateViewerControlsVisibility();
   ccBtn.classList.add('hidden');
-  if (canControl || !twitchPlayer) return;
+  if (!twitchPlayer) return;
   refreshMuteIcon(twitchPlayer.getMuted());
-  volumeSlider.value = Math.round((twitchPlayer.getVolume() || 0) * 100);
+  setVolumeSlider(Math.round((twitchPlayer.getVolume() || 0) * 100));
+  refreshTwitchQualities();
+}
+
+function refreshTwitchQualities() {
+  if (!twitchPlayer) return;
   const qualities = twitchPlayer.getQualities ? twitchPlayer.getQualities() : [];
   const names = qualities.map((q) => (q && (q.group || q.name)) || q).filter(Boolean);
   populateQualitySelect(names, twitchPlayer.getQuality ? twitchPlayer.getQuality() : null);
@@ -162,11 +203,11 @@ function setupViewerControlsForTwitch() {
 
 function setupViewerControlsForFile() {
   updateViewerControlsVisibility();
-  qualitySelect.classList.add('hidden');
+  qualityWrap.classList.add('hidden');
   ccBtn.classList.add('hidden');
-  if (canControl || !fileVideoEl) return;
+  if (!fileVideoEl) return;
   refreshMuteIcon(fileVideoEl.muted);
-  volumeSlider.value = Math.round((fileVideoEl.volume == null ? 1 : fileVideoEl.volume) * 100);
+  setVolumeSlider(Math.round((fileVideoEl.volume == null ? 1 : fileVideoEl.volume) * 100));
 }
 
 ccBtn.addEventListener('click', () => {
@@ -193,6 +234,7 @@ muteBtn.addEventListener('click', () => {
 
 volumeSlider.addEventListener('input', () => {
   const v = Number(volumeSlider.value);
+  volumeValue.textContent = v + '%';
   if (currentSourceType === 'youtube' && ytPlayer) {
     ytPlayer.setVolume(v);
     if (v > 0 && ytPlayer.isMuted()) { ytPlayer.unMute(); refreshMuteIcon(false); }
@@ -211,10 +253,53 @@ qualitySelect.addEventListener('change', () => {
   else if (currentSourceType === 'twitch' && twitchPlayer && twitchPlayer.setQuality) twitchPlayer.setQuality(q);
 });
 
+function stepVolume(delta) {
+  volumeSlider.value = Math.max(0, Math.min(100, Number(volumeSlider.value) + delta));
+  volumeSlider.dispatchEvent(new Event('input'));
+}
+document.getElementById('volDownBtn').addEventListener('click', () => stepVolume(-10));
+document.getElementById('volUpBtn').addEventListener('click', () => stepVolume(10));
+
+// Fullscreen the wrapper (not just the video) so the control bar stays usable in fullscreen.
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement;
+}
 fullscreenBtn.addEventListener('click', () => {
-  const req = playerFrame.requestFullscreen || playerFrame.webkitRequestFullscreen;
-  if (req) req.call(playerFrame);
+  if (fullscreenElement()) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    const req = playerWrap.requestFullscreen || playerWrap.webkitRequestFullscreen;
+    if (req) req.call(playerWrap);
+  }
 });
+function refreshFullscreenBtn() {
+  const on = !!fullscreenElement();
+  fullscreenBtn.innerHTML = on ? ICONS.shrink : ICONS.expand;
+  fullscreenBtn.title = on ? 'დაპატარავება' : 'გადიდება';
+  fullscreenBtn.setAttribute('aria-label', fullscreenBtn.title);
+}
+refreshFullscreenBtn();
+document.addEventListener('fullscreenchange', refreshFullscreenBtn);
+document.addEventListener('webkitfullscreenchange', refreshFullscreenBtn);
+
+// ---------- Time readout (8:24 / 46:35) ----------
+const timeLabel = document.getElementById('timeLabel');
+function formatTime(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+setInterval(() => {
+  let cur = 0, dur = 0;
+  try {
+    if (currentSourceType === 'youtube' && ytPlayer && ytPlayer.getCurrentTime) { cur = ytPlayer.getCurrentTime(); dur = ytPlayer.getDuration(); }
+    else if (currentSourceType === 'twitch' && twitchPlayer) { cur = twitchPlayer.getCurrentTime(); dur = twitchPlayer.getDuration(); }
+    else if (currentSourceType === 'file' && fileVideoEl) { cur = fileVideoEl.currentTime; dur = fileVideoEl.duration; }
+  } catch {}
+  // Twitch live streams report no finite duration.
+  timeLabel.textContent = isFinite(dur) && dur > 0 ? `${formatTime(cur)} / ${formatTime(dur)}`
+    : currentSourceType === 'twitch' ? '● LIVE' : '';
+}, 500);
 
 function escapeHtml(str) {
   const d = document.createElement('div');
@@ -312,6 +397,7 @@ function buildYouTubePlayer(videoId, initialVideoState) {
         setupViewerControlsForYouTube();
       },
       onStateChange: (e) => {
+        if (e.data === YT.PlayerState.PLAYING) refreshYouTubeQualities();
         if (!canControl || applyingRemote) return;
         if (e.data === YT.PlayerState.PLAYING) {
           socket.emit('video:play', ytPlayer.getCurrentTime());
@@ -373,6 +459,7 @@ function buildTwitchPlayer(parsed, initialVideoState) {
     if (parsed.type === 'twitch-vod') applyRemoteVideoState(initialVideoState, true);
     setupViewerControlsForTwitch();
   });
+  twitchPlayer.addEventListener(Twitch.Player.PLAYING, refreshTwitchQualities);
   if (parsed.type === 'twitch-vod') {
     twitchPlayer.addEventListener(Twitch.Player.PLAY, () => {
       if (!canControl || applyingRemote || !twitchPlayer) return;
@@ -704,6 +791,13 @@ function isRoomAdmin(p) {
   return p.userId === ownerId || adminIds.includes(p.userId);
 }
 
+// avatar is a server-validated data:image URL, so it is safe to put in src.
+function avatarHtml(p) {
+  return p.avatar
+    ? `<img class="avatar-img" src="${p.avatar}" alt="">`
+    : `<span class="avatar-dot">${escapeHtml(p.username[0].toUpperCase())}</span>`;
+}
+
 function renderParticipants(list) {
   lastParticipants = list;
   document.getElementById('viewerCountLabel').textContent = '· ' + list.length + ' ონლაინ';
@@ -715,7 +809,7 @@ function renderParticipants(list) {
     const row = document.createElement('div');
     row.className = 'participant-row';
     const label = p.userId === ownerId ? ' (მფლობელი)' : ' (ადმინი)';
-    row.innerHTML = `<span class="avatar-dot">${escapeHtml(p.username[0].toUpperCase())}</span><span>${escapeHtml(p.username)}${label}</span>`;
+    row.innerHTML = `${avatarHtml(p)}<span>${escapeHtml(p.username)}${label}</span>`;
     adminsEl.appendChild(row);
   });
 
@@ -724,7 +818,7 @@ function renderParticipants(list) {
   list.forEach((p) => {
     const row = document.createElement('div');
     row.className = 'participant-row';
-    row.innerHTML = `<span class="avatar-dot">${escapeHtml(p.username[0].toUpperCase())}</span><span>${escapeHtml(p.username)}</span>`;
+    row.innerHTML = `${avatarHtml(p)}<span>${escapeHtml(p.username)}</span>`;
     if (isOwner && p.userId !== myId && !isRoomAdmin(p)) {
       const btn = document.createElement('button');
       btn.className = 'btn btn-ghost btn-sm';

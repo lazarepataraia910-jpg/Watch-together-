@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch Together — პროფილი</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/index.html"><span class="logo">🎬</span> Watch Together</a>
+  <div class="topbar-right">
+    <a class="btn btn-ghost btn-sm" href="/index.html">← ოთახები</a>
+  </div>
+</div>
+
+<div class="page profile-page">
+  <div class="card">
+    <h2>პროფილის ფოტო</h2>
+    <div id="avatarMsg" class="error-box hidden"></div>
+    <div class="profile-avatar-row">
+      <div class="profile-avatar" id="avatarPreview"></div>
+      <div class="profile-avatar-actions">
+        <label class="btn btn-primary btn-sm" for="avatarInput">ფოტოს ატვირთვა</label>
+        <input type="file" id="avatarInput" accept="image/*" class="hidden">
+        <button class="btn btn-ghost btn-sm hidden" id="removeAvatarBtn" type="button">ფოტოს წაშლა</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>სახელი</h2>
+    <div id="nameMsg" class="error-box hidden"></div>
+    <form id="nameForm">
+      <div class="field">
+        <label for="usernameInput">მომხმარებლის სახელი</label>
+        <input type="text" id="usernameInput" minlength="3" maxlength="20" required>
+      </div>
+      <div class="field">
+        <label for="emailInput">ელფოსტა</label>
+        <input type="text" id="emailInput" disabled>
+      </div>
+      <button type="submit" class="btn btn-primary">შენახვა</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>პაროლის შეცვლა</h2>
+    <div id="passMsg" class="error-box hidden"></div>
+    <form id="passForm">
+      <div class="field" id="currentPassField">
+        <label for="currentPass">ახლანდელი პაროლი</label>
+        <input type="password" id="currentPass" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label for="newPass">ახალი პაროლი</label>
+        <input type="password" id="newPass" autocomplete="new-password" minlength="4" required>
+      </div>
+      <div class="field">
+        <label for="newPass2">გაიმეორე ახალი პაროლი</label>
+        <input type="password" id="newPass2" autocomplete="new-password" minlength="4" required>
+      </div>
+      <button type="submit" class="btn btn-primary">პაროლის შეცვლა</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>ანგარიში</h2>
+    <button class="btn btn-danger" id="logoutBtn" type="button">გამოსვლა</button>
+  </div>
+</div>
+
+<script>
+const ERRORS = {
+  BAD_USERNAME: 'სახელი უნდა იყოს 3-20 სიმბოლო: ასოები, ციფრები ან _.',
+  USERNAME_TAKEN: 'ეს სახელი უკვე დაკავებულია.',
+  BAD_AVATAR: 'ფოტო ვერ შეინახა — სცადე სხვა სურათი.',
+  BAD_PASSWORD: 'პაროლი უნდა იყოს მინიმუმ 4 სიმბოლო.',
+  WRONG_PASSWORD: 'ახლანდელი პაროლი არასწორია.',
+  MISMATCH: 'ახალი პაროლები არ ემთხვევა.',
+  NETWORK: 'სერვერთან კავშირი ვერ დამყარდა.',
+};
+
+let me = null;
+
+// msg: show an error (ok=false) or a success note (ok=true) in one of the card message boxes.
+function showMsg(id, text, ok) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.classList.toggle('success-box', !!ok);
+  el.classList.remove('hidden');
+}
+function hideMsg(id) { document.getElementById(id).classList.add('hidden'); }
+
+async function send(url, method, body) {
+  let res;
+  try {
+    res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch {
+    return { ok: false, error: 'NETWORK' };
+  }
+  if (res.status === 401) { window.location.href = '/login.html'; return { ok: false }; }
+  let data = {};
+  try { data = await res.json(); } catch {}
+  return res.ok ? data : { ok: false, error: data.error || (res.status === 413 ? 'BAD_AVATAR' : 'ERROR') };
+}
+const errText = (code) => ERRORS[code] || 'დაფიქსირდა შეცდომა, სცადეთ ისევ.';
+
+function renderAvatar() {
+  const box = document.getElementById('avatarPreview');
+  box.innerHTML = '';
+  if (me.avatar) {
+    const img = document.createElement('img');
+    img.src = me.avatar;
+    img.alt = 'პროფილის ფოტო';
+    box.appendChild(img);
+  } else {
+    box.textContent = me.username[0].toUpperCase();
+  }
+  document.getElementById('removeAvatarBtn').classList.toggle('hidden', !me.avatar);
+}
+
+async function init() {
+  const res = await fetch('/api/me').catch(() => null);
+  if (!res || !res.ok) { window.location.href = '/login.html'; return; }
+  me = (await res.json()).user;
+  document.getElementById('usernameInput').value = me.username;
+  document.getElementById('emailInput').value = me.email || '—';
+  // Google-only accounts have no password yet, so they just set one.
+  document.getElementById('currentPassField').classList.toggle('hidden', !me.hasPassword);
+  renderAvatar();
+}
+
+// ---- Photo: crop to a centered square and shrink to 256px so it fits the server's size limit ----
+function resizeToDataUrl(file, size) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+document.getElementById('avatarInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  hideMsg('avatarMsg');
+  let dataUrl;
+  try { dataUrl = await resizeToDataUrl(file, 256); } catch { return showMsg('avatarMsg', 'ეს ფაილი სურათი არ არის.'); }
+  const result = await send('/api/me', 'PATCH', { avatar: dataUrl });
+  if (!result.ok) return showMsg('avatarMsg', errText(result.error));
+  me.avatar = result.user.avatar;
+  renderAvatar();
+  showMsg('avatarMsg', 'ფოტო შეინახა ✓', true);
+});
+
+document.getElementById('removeAvatarBtn').addEventListener('click', async () => {
+  const result = await send('/api/me', 'PATCH', { avatar: null });
+  if (!result.ok) return showMsg('avatarMsg', errText(result.error));
+  me.avatar = null;
+  renderAvatar();
+  showMsg('avatarMsg', 'ფოტო წაიშალა.', true);
+});
+
+document.getElementById('nameForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const result = await send('/api/me', 'PATCH', { username: document.getElementById('usernameInput').value });
+  if (!result.ok) return showMsg('nameMsg', errText(result.error));
+  me.username = result.user.username;
+  renderAvatar();
+  showMsg('nameMsg', 'სახელი შეიცვალა ✓', true);
+});
+
+document.getElementById('passForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const newPassword = document.getElementById('newPass').value;
+  if (newPassword !== document.getElementById('newPass2').value) return showMsg('passMsg', errText('MISMATCH'));
+  const result = await send('/api/me/password', 'POST', { currentPassword: document.getElementById('currentPass').value, newPassword });
+  if (!result.ok) return showMsg('passMsg', errText(result.error));
+  e.target.reset();
+  me.hasPassword = true;
+  document.getElementById('currentPassField').classList.remove('hidden');
+  showMsg('passMsg', 'პაროლი შეიცვალა ✓', true);
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+  window.location.href = '/index.html';
+});
+
+init();
+</script>
+
+</body>
+</html>

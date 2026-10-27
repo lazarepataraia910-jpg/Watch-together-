@@ -11,8 +11,9 @@
 <div class="topbar">
   <div class="brand"><span class="logo">🎬</span> Watch Together</div>
   <div class="topbar-right">
-    <span class="username-pill" id="usernamePill">…</span>
-    <button class="btn btn-ghost btn-sm" id="logoutBtn">გამოსვლა</button>
+    <a class="username-pill hidden" id="usernamePill" href="/profile.html" title="პროფილი"></a>
+    <button class="btn btn-ghost btn-sm hidden" id="logoutBtn">გამოსვლა</button>
+    <a class="btn btn-primary btn-sm hidden" id="loginLink" href="/login.html">შესვლა / რეგისტრაცია</a>
   </div>
 </div>
 
@@ -39,7 +40,7 @@
         </form>
       </div>
 
-      <div class="card">
+      <div class="card hidden" id="friendsCard">
         <h2>მეგობრები</h2>
         <div id="friendError" class="error-box hidden"></div>
         <form id="addFriendForm" class="search-row">
@@ -121,19 +122,35 @@ function postJSON(url, body) {
   return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 }
 
+// Guests can browse rooms; anything that needs an account (create/join/friends) gets a 401 from
+// the server, and api() then sends them to the login page.
 async function init() {
-  const meRes = await api('/api/me');
-  if (!meRes.ok && meRes.error !== 'AUTH_REQUIRED') return;
-  if (!meRes.user) return;
+  loadRooms();
+  let meRes = null;
+  try { meRes = await fetch('/api/me').then((r) => (r.ok ? r.json() : null)); } catch {}
+  if (!meRes || !meRes.user) {
+    document.getElementById('loginLink').classList.remove('hidden');
+    return;
+  }
   me = meRes.user;
-  document.getElementById('usernamePill').textContent = '👤 ' + me.username;
+  const pill = document.getElementById('usernamePill');
+  pill.innerHTML = avatarHtml(me) + '<span>' + escapeHtml(me.username) + '</span>';
+  pill.classList.remove('hidden');
+  document.getElementById('logoutBtn').classList.remove('hidden');
+  document.getElementById('friendsCard').classList.remove('hidden');
   loadRooms();
   loadFriends();
 }
 
+function avatarHtml(u) {
+  return u.avatar
+    ? `<img class="avatar-img" src="${u.avatar}" alt="">`
+    : `<span class="avatar-dot">${escapeHtml(u.username[0].toUpperCase())}</span>`;
+}
+
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await postJSON('/api/logout');
-  window.location.href = '/login.html';
+  window.location.href = '/index.html';
 });
 
 // ---- Create room ----
@@ -172,7 +189,8 @@ function renderFriends(friends) {
     const div = document.createElement('div');
     div.className = 'friend-card';
     div.innerHTML = `
-      <div class="info">
+      <div class="info friend-info">
+        ${avatarHtml(f)}
         <div class="name">${escapeHtml(f.username)}</div>
       </div>
     `;
