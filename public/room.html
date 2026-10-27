@@ -32,6 +32,8 @@
     </div>
 
     <div class="viewer-controls hidden" id="viewerControls">
+      <input type="range" class="pc-seek hidden" id="seekBar" min="0" max="1000" value="0" step="1" aria-label="ვიდეოს პროგრესი">
+      <button class="pc-btn hidden" id="playPauseBtn" type="button" title="დაკვრა" aria-label="დაკვრა"></button>
       <button class="pc-btn" id="muteBtn" type="button" title="ხმის გათიშვა" aria-label="ხმის გათიშვა"></button>
       <button class="pc-btn" id="volDownBtn" type="button" title="ხმის დაწევა" aria-label="ხმის დაწევა">−</button>
       <input type="range" id="volumeSlider" min="0" max="100" value="100" aria-label="ხმა">
@@ -109,6 +111,7 @@ let vimeoPlayer = null;
 let vimeoTime = 0; // cached from Vimeo's timeupdate event, since its getters are async
 let vimeoDuration = 0;
 let vimeoMuted = false;
+let vimeoPlaying = false;
 let hlsInstance = null;
 let currentIsLive = false; // live streams play at the live edge; time sync is skipped for them
 
@@ -149,8 +152,8 @@ function updateViewerControlsVisibility() {
   const show = ['youtube', 'twitch', 'vimeo', 'file'].includes(currentSourceType)
     || (currentSourceType === 'screen' && !!fileVideoEl);
   viewerControls.classList.toggle('hidden', !show);
-  // Admins keep the native player controls at the bottom, so their bar sits below the video instead of over it.
-  playerWrap.classList.toggle('overlay', !canControl);
+  playerWrap.classList.add('overlay');
+  refreshAdminControls();
 }
 
 const ICONS = {
@@ -158,6 +161,8 @@ const ICONS = {
   muted: '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm18.6 6.2-1.4 1.4L17 13.4l-3.2 3.2-1.4-1.4L15.6 12l-3.2-3.2 1.4-1.4L17 10.6l3.2-3.2 1.4 1.4L18.4 12z"/></svg>',
   expand: '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>',
   shrink: '<svg viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>',
 };
 
 function refreshMuteIcon(muted) {
@@ -309,6 +314,96 @@ refreshFullscreenBtn();
 document.addEventListener('fullscreenchange', refreshFullscreenBtn);
 document.addEventListener('webkitfullscreenchange', refreshFullscreenBtn);
 
+// ---------- Player adapter: play/pause/seek/time for whichever player is active ----------
+function activePlayer() {
+  if (currentSourceType === 'youtube' && ytPlayer && ytPlayer.getPlayerState) {
+    return {
+      time: () => ytPlayer.getCurrentTime(),
+      duration: () => ytPlayer.getDuration(),
+      playing: () => [YT.PlayerState.PLAYING, YT.PlayerState.BUFFERING].includes(ytPlayer.getPlayerState()),
+      play: () => ytPlayer.playVideo(),
+      pause: () => ytPlayer.pauseVideo(),
+      seek: (t) => ytPlayer.seekTo(t, true),
+    };
+  }
+  if (currentSourceType === 'twitch' && twitchPlayer) {
+    return {
+      time: () => twitchPlayer.getCurrentTime(),
+      duration: () => twitchPlayer.getDuration(),
+      playing: () => !twitchPlayer.isPaused(),
+      play: () => twitchPlayer.play(),
+      pause: () => twitchPlayer.pause(),
+      seek: (t) => twitchPlayer.seek(t),
+    };
+  }
+  if (currentSourceType === 'vimeo' && vimeoPlayer) {
+    return {
+      time: () => vimeoTime,
+      duration: () => vimeoDuration,
+      playing: () => vimeoPlaying,
+      play: () => vimeoPlayer.play().catch(() => {}),
+      pause: () => vimeoPlayer.pause().catch(() => {}),
+      seek: (t) => vimeoPlayer.setCurrentTime(t).catch(() => {}),
+    };
+  }
+  if (currentSourceType === 'file' && fileVideoEl) {
+    const v = fileVideoEl;
+    return {
+      time: () => v.currentTime,
+      duration: () => v.duration,
+      playing: () => !v.paused,
+      play: () => v.play().catch(() => {}),
+      pause: () => v.pause(),
+      seek: (t) => { v.currentTime = t; },
+    };
+  }
+  return null;
+}
+
+// ---------- Admin playback controls (play/pause + progress bar) in our own bar ----------
+const playPauseBtn = document.getElementById('playPauseBtn');
+const seekBar = document.getElementById('seekBar');
+let seekDragging = false;
+
+function refreshAdminControls() {
+  const controllable = canControl && ['youtube', 'twitch', 'vimeo', 'file'].includes(currentSourceType);
+  playPauseBtn.classList.toggle('hidden', !controllable);
+  seekBar.classList.toggle('hidden', !controllable || currentIsLive);
+}
+
+function togglePlay() {
+  const p = canControl && activePlayer();
+  if (!p) return;
+  if (p.playing()) p.pause(); else p.play();
+}
+playPauseBtn.addEventListener('click', togglePlay);
+
+seekBar.addEventListener('input', () => {
+  seekDragging = true;
+  const p = activePlayer();
+  const dur = p && p.duration();
+  if (dur) timeLabel.textContent = `${formatTime(dur * seekBar.value / 1000)} / ${formatTime(dur)}`;
+});
+seekBar.addEventListener('change', () => {
+  seekDragging = false;
+  const p = canControl && activePlayer();
+  const dur = p && p.duration();
+  if (!dur) return;
+  const t = dur * seekBar.value / 1000;
+  p.seek(t);
+  emitVideo('video:seek', t);
+});
+
+// Transparent layer over third-party players: hovering never wakes their own title bar /
+// controls / "More videos", and clicks can't open the source site. Admins click it to play/pause.
+function addShield(parent) {
+  const shield = document.createElement('div');
+  shield.className = 'player-shield';
+  shield.addEventListener('click', togglePlay);
+  shield.addEventListener('dblclick', () => fullscreenBtn.click());
+  parent.appendChild(shield);
+}
+
 // ---------- Time readout (8:24 / 46:35) ----------
 const timeLabel = document.getElementById('timeLabel');
 function formatTime(s) {
@@ -324,9 +419,18 @@ setInterval(() => {
     else if (currentSourceType === 'vimeo') { cur = vimeoTime; dur = vimeoDuration; }
     else if (currentSourceType === 'file' && fileVideoEl) { cur = fileVideoEl.currentTime; dur = fileVideoEl.duration; }
   } catch {}
+  if (seekDragging) return;
   // Live streams report no finite duration.
   timeLabel.textContent = isFinite(dur) && dur > 0 && !currentIsLive ? `${formatTime(cur)} / ${formatTime(dur)}`
     : currentIsLive || currentSourceType === 'twitch' ? '● LIVE' : '';
+  if (isFinite(dur) && dur > 0) seekBar.value = Math.round((cur / dur) * 1000);
+  const p = activePlayer();
+  let playing = false;
+  try { playing = !!(p && p.playing()); } catch {}
+  playPauseBtn.innerHTML = playing ? ICONS.pause : ICONS.play;
+  playPauseBtn.title = playing ? 'პაუზა' : 'დაკვრა';
+  playPauseBtn.setAttribute('aria-label', playPauseBtn.title);
+  refreshAdminControls();
 }, 500);
 
 function escapeHtml(str) {
@@ -395,6 +499,7 @@ function youtubeErrorMessage(code) {
 
 // ---------- Player: builds a YouTube/Twitch iframe player or an HTML5 <video> ----------
 function destroyPlayer() {
+  playerFrame.classList.remove('crop');
   if (ytPlayer && ytPlayer.destroy) {
     try { ytPlayer.destroy(); } catch {}
   }
@@ -465,11 +570,13 @@ function buildYouTubePlayer(videoId, initialVideoState) {
   holder.id = 'ytHolder';
   playerFrame.appendChild(holder);
 
+  playerFrame.classList.add('crop');
+  addShield(playerFrame);
   ytPlayer = new YT.Player('ytHolder', {
     videoId,
     playerVars: {
       autoplay: 0, playsinline: 1, rel: 0, iv_load_policy: 3,
-      controls: canControl ? 1 : 0, disablekb: canControl ? 0 : 1, fs: canControl ? 1 : 0,
+      controls: 0, disablekb: 1, fs: 0, modestbranding: 1, cc_load_policy: 0,
     },
     events: {
       onReady: () => {
@@ -527,14 +634,10 @@ function buildTwitchPlayer(parsed, initialVideoState) {
 
   twitchPlayer = new Twitch.Player('twitchHolder', options);
 
-  // Twitch's embed has no option to hide its native controls, so for non-admins we
-  // block all pointer interaction with the iframe and drive it only through our own
-  // viewer-controls bar (mute/volume/quality/fullscreen), which uses the JS API directly.
-  if (!canControl) {
-    const blocker = document.createElement('div');
-    blocker.className = 'twitch-click-blocker';
-    holder.appendChild(blocker);
-  }
+  // Twitch's embed has no option to hide its own controls/title, so it is cropped and shielded
+  // like YouTube and driven only through our bar via the JS API.
+  playerFrame.classList.add('crop');
+  addShield(holder);
 
   twitchPlayer.addEventListener(Twitch.Player.READY, () => {
     if (parsed.type === 'twitch-vod') applyRemoteVideoState(initialVideoState, true);
@@ -561,9 +664,11 @@ function buildFilePlayer(parsed, initialVideoState) {
   currentSourceType = 'file';
   updateViewerControlsVisibility();
   const video = document.createElement('video');
-  video.controls = canControl;
+  video.controls = false;
   video.playsInline = true;
   video.preload = 'auto';
+  video.addEventListener('click', togglePlay);
+  video.addEventListener('dblclick', () => fullscreenBtn.click());
   fileVideoEl = video;
   playerFrame.appendChild(video);
 
@@ -627,16 +732,17 @@ function buildVimeoPlayer(id, initialVideoState) {
   playerFrame.appendChild(holder);
   loadScript('https://player.vimeo.com/api/player.js').then(() => {
     if (currentSourceType !== 'vimeo' || !holder.isConnected) return;
-    const player = new Vimeo.Player(holder, { id: Number(id), controls: canControl, autoplay: false, playsinline: true, dnt: true });
+    const player = new Vimeo.Player(holder, {
+      id: Number(id), controls: false, title: false, byline: false, portrait: false,
+      autoplay: false, playsinline: true, dnt: true,
+    });
     vimeoPlayer = player;
-    if (!canControl) {
-      const blocker = document.createElement('div');
-      blocker.className = 'twitch-click-blocker';
-      holder.appendChild(blocker);
-    }
+    vimeoPlaying = false;
+    playerFrame.classList.add('crop');
+    addShield(holder);
     player.on('timeupdate', (d) => { vimeoTime = d.seconds; vimeoDuration = d.duration; });
-    player.on('play', (d) => { if (canControl && !applyingRemote) emitVideo('video:play', d.seconds); });
-    player.on('pause', (d) => { if (canControl && !applyingRemote) emitVideo('video:pause', d.seconds); });
+    player.on('play', (d) => { vimeoPlaying = true; if (canControl && !applyingRemote) emitVideo('video:play', d.seconds); });
+    player.on('pause', (d) => { vimeoPlaying = false; if (canControl && !applyingRemote) emitVideo('video:pause', d.seconds); });
     player.on('seeked', (d) => { if (canControl && !applyingRemote) emitVideo('video:seek', d.seconds); });
     player.ready().then(() => {
       if (vimeoPlayer !== player) return;

@@ -573,7 +573,6 @@ input:disabled { color: var(--muted); background: var(--surface-2); }
 .player-frame iframe,
 .player-frame video { width: 100%; height: 100%; display: block; border: none; }
 
-.twitch-click-blocker { position: absolute; inset: 0; z-index: 5; background: transparent; }
 
 .player-placeholder {
   color: var(--muted);
@@ -801,3 +800,28 @@ input:disabled { color: var(--muted); background: var(--surface-2); }
 }
 .not-found h1 { font-size: clamp(30px, 5vw, 44px); margin-bottom: 12px; }
 .not-found .muted { margin: 0 0 28px; }
+
+/* ---------- Hide third-party player chrome ----------
+   The iframe is made taller than the frame and shifted up, so the player's own title bar (top)
+   and control/branding strip (bottom) sit outside the visible area; the video stays centered. */
+.player-frame.crop iframe {
+  position: absolute;
+  left: 0;
+  top: -64px;
+  width: 100% !important;
+  height: calc(100% + 128px) !important;
+}
+.player-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: transparent;
+}
+.viewer-controls { flex-wrap: wrap; }
+.pc-seek {
+  flex: 1 1 100%;
+  height: 4px;
+  margin: 0 4px 6px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
