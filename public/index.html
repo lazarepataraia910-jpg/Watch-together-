@@ -33,6 +33,7 @@
     <section>
       <div class="section-title">
         <h2>ოთახები</h2>
+        <button class="btn btn-primary" id="openCreateBtn" type="button">+ ოთახის შექმნა</button>
       </div>
       <div class="room-list" id="roomList">
         <div class="empty-state loading-state">იტვირთება…</div>
@@ -40,26 +41,6 @@
     </section>
 
     <aside class="card-stack">
-      <div class="card">
-        <h2>ოთახის შექმნა</h2>
-        <div id="createError" class="error-box hidden"></div>
-        <form id="createForm">
-          <div class="field">
-            <label for="roomName">ოთახის სახელი</label>
-            <input type="text" id="roomName" placeholder="მაგ. კინოსერანტი პარასკევს" required>
-          </div>
-          <div class="field">
-            <label for="roomPassword">პაროლი</label>
-            <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
-          </div>
-          <div class="field">
-            <label for="roomVideo">ვიდეოს ბმული <span class="opt">(არასავალდებულო)</span></label>
-            <input type="url" id="roomVideo" placeholder="YouTube, Twitch ან პირდაპირი .mp4 ბმული">
-          </div>
-          <button type="submit" class="btn btn-primary btn-block" id="createSubmit">ოთახის შექმნა</button>
-        </form>
-      </div>
-
       <div class="card hidden" id="friendsCard">
         <h2>მეგობრები</h2>
         <div id="friendError" class="error-box hidden"></div>
@@ -74,6 +55,32 @@
     </aside>
   </div>
 </main>
+
+<div class="modal-backdrop hidden" id="createModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="createModalTitle">
+    <h3 id="createModalTitle">ოთახის შექმნა</h3>
+    <p>მეგობრები ოთახს სახელით იპოვიან და პაროლით შემოვლენ.</p>
+    <div id="createError" class="error-box hidden"></div>
+    <form id="createForm">
+      <div class="field">
+        <label for="roomName">ოთახის სახელი</label>
+        <input type="text" id="roomName" placeholder="მაგ. კინოსერანტი პარასკევს" required>
+      </div>
+      <div class="field">
+        <label for="roomPassword">პაროლი</label>
+        <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
+      </div>
+      <div class="field">
+        <label for="roomVideo">ვიდეოს ბმული <span class="opt">(არასავალდებულო)</span></label>
+        <input type="url" id="roomVideo" placeholder="YouTube, Twitch ან პირდაპირი .mp4 ბმული">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="createCancelBtn" type="button">გაუქმება</button>
+        <button type="submit" class="btn btn-primary" id="createSubmit">შექმნა</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div class="modal-backdrop hidden" id="joinModal">
   <div class="modal">
@@ -162,9 +169,27 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   window.location.href = '/index.html';
 });
 
-// ---- Create room ----
+// ---- Create room (popup) ----
 const createForm = document.getElementById('createForm');
 const createError = document.getElementById('createError');
+const createModal = document.getElementById('createModal');
+
+document.getElementById('openCreateBtn').addEventListener('click', () => {
+  if (!me) { window.location.href = '/login.html'; return; }
+  createForm.reset();
+  createError.classList.add('hidden');
+  createModal.classList.remove('hidden');
+  setTimeout(() => document.getElementById('roomName').focus(), 50);
+});
+document.getElementById('createCancelBtn').addEventListener('click', () => createModal.classList.add('hidden'));
+
+// Escape or a click on the dimmed backdrop closes whichever popup is open.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.querySelectorAll('.modal-backdrop').forEach((m) => m.classList.add('hidden'));
+});
+document.querySelectorAll('.modal-backdrop').forEach((m) => {
+  m.addEventListener('click', (e) => { if (e.target === m) m.classList.add('hidden'); });
+});
 createForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   createError.classList.add('hidden');
@@ -258,7 +283,7 @@ function timeAgo(ts) {
 
 function renderRooms(rooms) {
   if (!rooms.length) {
-    roomList.innerHTML = '<div class="empty-state">ოთახი ვერ მოიძებნა.<br>შექმენი პირველი — ფორმა გვერდითაა.</div>';
+    roomList.innerHTML = '<div class="empty-state">ოთახი ვერ მოიძებნა.<br>დააჭირე „+ ოთახის შექმნა"-ს და შექმენი პირველი.</div>';
     return;
   }
   roomList.innerHTML = '';
