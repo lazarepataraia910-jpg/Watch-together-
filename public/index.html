@@ -8,18 +8,38 @@
 </head>
 <body>
 
-<div class="topbar">
-  <div class="brand"><span class="logo">🎬</span> Watch Together</div>
+<header class="topbar">
+  <a class="brand" href="/index.html"><span class="brand-mark"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2l11 6-11 6z"/></svg></span><span class="brand-text">Watch Together</span></a>
   <div class="topbar-right">
     <a class="username-pill hidden" id="usernamePill" href="/profile.html" title="პროფილი"></a>
     <button class="btn btn-ghost btn-sm hidden" id="logoutBtn">გამოსვლა</button>
-    <a class="btn btn-primary btn-sm hidden" id="loginLink" href="/login.html">შესვლა / რეგისტრაცია</a>
+    <a class="btn btn-primary btn-sm hidden" id="loginLink" href="/login.html">შესვლა</a>
   </div>
-</div>
+</header>
 
-<div class="page">
-  <div class="grid-2">
-    <div class="card-stack">
+<main class="page">
+  <section class="page-head">
+    <div>
+      <p class="eyebrow">ონლაინ კინოდარბაზი</p>
+      <h1>რას ვუყურებთ დღეს?</h1>
+    </div>
+    <div class="search-row">
+      <input type="search" id="searchInput" placeholder="ოთახის ძებნა სახელით…" aria-label="ოთახის ძებნა">
+      <button class="btn btn-ghost" id="refreshBtn" title="განახლება" aria-label="განახლება">↻</button>
+    </div>
+  </section>
+
+  <div class="layout-main">
+    <section>
+      <div class="section-title">
+        <h2>ოთახები</h2>
+      </div>
+      <div class="room-list" id="roomList">
+        <div class="empty-state loading-state">იტვირთება…</div>
+      </div>
+    </section>
+
+    <aside class="card-stack">
       <div class="card">
         <h2>ოთახის შექმნა</h2>
         <div id="createError" class="error-box hidden"></div>
@@ -33,7 +53,7 @@
             <input type="text" id="roomPassword" placeholder="გაუზიარე მხოლოდ მეგობრებს" required>
           </div>
           <div class="field">
-            <label for="roomVideo">ვიდეოს ბმული <span style="font-weight:400">(არასავალდებულო)</span></label>
+            <label for="roomVideo">ვიდეოს ბმული <span class="opt">(არასავალდებულო)</span></label>
             <input type="url" id="roomVideo" placeholder="YouTube, Twitch ან პირდაპირი .mp4 ბმული">
           </div>
           <button type="submit" class="btn btn-primary btn-block" id="createSubmit">ოთახის შექმნა</button>
@@ -51,20 +71,9 @@
           <div class="empty-state loading-state">იტვირთება…</div>
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>ოთახების ძებნა</h2>
-      <div class="search-row">
-        <input type="search" id="searchInput" placeholder="ძებნა სახელით…">
-        <button class="btn btn-ghost" id="refreshBtn">🔄</button>
-      </div>
-      <div class="room-list" id="roomList">
-        <div class="empty-state loading-state">იტვირთება…</div>
-      </div>
-    </div>
+    </aside>
   </div>
-</div>
+</main>
 
 <div class="modal-backdrop hidden" id="joinModal">
   <div class="modal">
@@ -249,7 +258,7 @@ function timeAgo(ts) {
 
 function renderRooms(rooms) {
   if (!rooms.length) {
-    roomList.innerHTML = '<div class="empty-state">ოთახი ვერ მოიძებნა.<br>შექმენი პირველი ოთახი მარცხნივ 👈</div>';
+    roomList.innerHTML = '<div class="empty-state">ოთახი ვერ მოიძებნა.<br>შექმენი პირველი — ფორმა გვერდითაა.</div>';
     return;
   }
   roomList.innerHTML = '';
@@ -258,10 +267,14 @@ function renderRooms(rooms) {
     div.className = 'room-card';
     const isMine = me && r.ownerUsername === me.username;
     div.innerHTML = `
+      <div class="room-screen">
+        ${r.viewerCount > 0 ? `<span class="live-badge"><span class="live-dot"></span>${r.viewerCount} უყურებს</span>` : ''}
+        <span class="room-initial">${escapeHtml(r.name.charAt(0).toUpperCase())}</span>
+      </div>
       <div class="info">
         <div class="name">${escapeHtml(r.name)}</div>
         <div class="meta">
-          <span>${r.viewerCount > 0 ? '<span class="live-dot"></span>' + r.viewerCount + ' უყურებს' : timeAgo(r.createdAt)}</span>
+          <span>${timeAgo(r.createdAt)}</span>
           <span>· ${escapeHtml(r.ownerUsername)}</span>
         </div>
       </div>

@@ -8,68 +8,76 @@
 </head>
 <body>
 
-<div class="topbar">
-  <a class="brand" href="/index.html"><span class="logo">🎬</span> Watch Together</a>
+<header class="topbar">
+  <a class="brand" href="/index.html"><span class="brand-mark"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2l11 6-11 6z"/></svg></span><span class="brand-text">Watch Together</span></a>
   <div class="topbar-right">
     <a class="btn btn-ghost btn-sm" href="/index.html">← ოთახები</a>
   </div>
-</div>
+</header>
 
-<div class="page profile-page">
-  <div class="card">
-    <h2>პროფილის ფოტო</h2>
-    <div id="avatarMsg" class="error-box hidden"></div>
-    <div class="profile-avatar-row">
+<main class="page">
+  <section class="page-head">
+    <div>
+      <p class="eyebrow">ანგარიში</p>
+      <h1>პროფილის პარამეტრები</h1>
+    </div>
+  </section>
+
+  <div class="profile-layout">
+    <aside class="card profile-summary">
       <div class="profile-avatar" id="avatarPreview"></div>
+      <h2 id="summaryName">…</h2>
+      <p class="muted" id="summaryEmail"></p>
+      <div id="avatarMsg" class="error-box hidden"></div>
       <div class="profile-avatar-actions">
         <label class="btn btn-primary btn-sm" for="avatarInput">ფოტოს ატვირთვა</label>
         <input type="file" id="avatarInput" accept="image/*" class="hidden">
         <button class="btn btn-ghost btn-sm hidden" id="removeAvatarBtn" type="button">ფოტოს წაშლა</button>
       </div>
+      <button class="btn btn-danger btn-sm" id="logoutBtn" type="button">გამოსვლა</button>
+    </aside>
+
+    <div class="profile-forms">
+      <div class="card">
+        <h2>სახელი</h2>
+        <p class="hint">ამ სახელით გხედავენ ოთახებსა და ჩატში.</p>
+        <div id="nameMsg" class="error-box hidden"></div>
+        <form id="nameForm">
+          <div class="field">
+            <label for="usernameInput">მომხმარებლის სახელი</label>
+            <input type="text" id="usernameInput" minlength="3" maxlength="20" required>
+          </div>
+          <div class="field">
+            <label for="emailInput">ელფოსტა <span class="opt">(ვერ შეიცვლება)</span></label>
+            <input type="text" id="emailInput" disabled>
+          </div>
+          <button type="submit" class="btn btn-primary">შენახვა</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>პაროლის შეცვლა</h2>
+        <p class="hint">მინიმუმ 4 სიმბოლო.</p>
+        <div id="passMsg" class="error-box hidden"></div>
+        <form id="passForm">
+          <div class="field" id="currentPassField">
+            <label for="currentPass">ახლანდელი პაროლი</label>
+            <input type="password" id="currentPass" autocomplete="current-password">
+          </div>
+          <div class="field">
+            <label for="newPass">ახალი პაროლი</label>
+            <input type="password" id="newPass" autocomplete="new-password" minlength="4" required>
+          </div>
+          <div class="field">
+            <label for="newPass2">გაიმეორე ახალი პაროლი</label>
+            <input type="password" id="newPass2" autocomplete="new-password" minlength="4" required>
+          </div>
+          <button type="submit" class="btn btn-primary">პაროლის შეცვლა</button>
+        </form>
+      </div>
     </div>
   </div>
-
-  <div class="card">
-    <h2>სახელი</h2>
-    <div id="nameMsg" class="error-box hidden"></div>
-    <form id="nameForm">
-      <div class="field">
-        <label for="usernameInput">მომხმარებლის სახელი</label>
-        <input type="text" id="usernameInput" minlength="3" maxlength="20" required>
-      </div>
-      <div class="field">
-        <label for="emailInput">ელფოსტა</label>
-        <input type="text" id="emailInput" disabled>
-      </div>
-      <button type="submit" class="btn btn-primary">შენახვა</button>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2>პაროლის შეცვლა</h2>
-    <div id="passMsg" class="error-box hidden"></div>
-    <form id="passForm">
-      <div class="field" id="currentPassField">
-        <label for="currentPass">ახლანდელი პაროლი</label>
-        <input type="password" id="currentPass" autocomplete="current-password">
-      </div>
-      <div class="field">
-        <label for="newPass">ახალი პაროლი</label>
-        <input type="password" id="newPass" autocomplete="new-password" minlength="4" required>
-      </div>
-      <div class="field">
-        <label for="newPass2">გაიმეორე ახალი პაროლი</label>
-        <input type="password" id="newPass2" autocomplete="new-password" minlength="4" required>
-      </div>
-      <button type="submit" class="btn btn-primary">პაროლის შეცვლა</button>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2>ანგარიში</h2>
-    <button class="btn btn-danger" id="logoutBtn" type="button">გამოსვლა</button>
-  </div>
-</div>
+</main>
 
 <script>
 const ERRORS = {
@@ -119,6 +127,8 @@ function renderAvatar() {
     box.textContent = me.username[0].toUpperCase();
   }
   document.getElementById('removeAvatarBtn').classList.toggle('hidden', !me.avatar);
+  document.getElementById('summaryName').textContent = me.username;
+  document.getElementById('summaryEmail').textContent = me.email || '';
 }
 
 async function init() {
