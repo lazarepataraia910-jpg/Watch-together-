@@ -742,6 +742,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const state = getState();
     if (!state) return;
+    if (state.leader === socket.id) state.leader = null;
     if (state.screenSharer && state.screenSharer.socketId === socket.id) {
       state.screenSharer = null;
       io.to(currentRoomId).emit('screen:stopped');

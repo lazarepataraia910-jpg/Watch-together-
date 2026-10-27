@@ -114,6 +114,7 @@ let vimeoMuted = false;
 let vimeoPlaying = false;
 let hlsInstance = null;
 let currentIsLive = false; // live streams play at the live edge; time sync is skipped for them
+let loadedSourceUrl = null; // URL of the player currently built, so a reconnect can keep it
 
 // ---------- Screen share (WebRTC, mesh: sharer holds one RTCPeerConnection per viewer) ----------
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
@@ -478,6 +479,7 @@ function parseVideoUrl(url) {
 }
 
 function showPlayerError(text) {
+  loadedSourceUrl = null;
   destroyPlayer();
   currentSourceType = 'none';
   const div = document.createElement('div');
@@ -539,7 +541,12 @@ function loadScript(src) {
 
 // Sends a play/pause/seek/sync with the position and the (server-clock) moment it was true.
 function emitVideo(event, time) {
-  socket.emit(event, { time, at: serverNow() });
+  const at = serverNow();
+  socket.emit(event, { time, at });
+  if (lastVideoState) {
+    const playing = event === 'video:play' ? true : event === 'video:pause' ? false : lastVideoState.playing;
+    lastVideoState = { ...lastVideoState, playing, time, updatedAt: at };
+  }
 }
 
 function loadYouTubeApiIfNeeded() {
@@ -585,6 +592,8 @@ function buildYouTubePlayer(videoId, initialVideoState) {
       },
       onStateChange: (e) => {
         if (e.data === YT.PlayerState.PLAYING) refreshYouTubeQualities();
+        if (e.data === YT.PlayerState.PLAYING) enforceRoomState(true);
+        else if (e.data === YT.PlayerState.PAUSED) enforceRoomState(false);
         if (!canControl || applyingRemote) return;
         if (e.data === YT.PlayerState.PLAYING) {
           emitVideo('video:play', ytPlayer.getCurrentTime());
@@ -644,6 +653,8 @@ function buildTwitchPlayer(parsed, initialVideoState) {
     setupViewerControlsForTwitch();
   });
   twitchPlayer.addEventListener(Twitch.Player.PLAYING, refreshTwitchQualities);
+  twitchPlayer.addEventListener(Twitch.Player.PLAY, () => enforceRoomState(true));
+  twitchPlayer.addEventListener(Twitch.Player.PAUSE, () => enforceRoomState(false));
   if (parsed.type === 'twitch-vod') {
     twitchPlayer.addEventListener(Twitch.Player.PLAY, () => {
       if (!canControl || applyingRemote || !twitchPlayer) return;
@@ -684,10 +695,12 @@ function buildFilePlayer(parsed, initialVideoState) {
     applyRemoteVideoState(initialVideoState, true);
   });
   video.addEventListener('play', () => {
+    enforceRoomState(true);
     if (!canControl || applyingRemote) return;
     emitVideo('video:play', video.currentTime);
   });
   video.addEventListener('pause', () => {
+    enforceRoomState(false);
     if (!canControl || applyingRemote) return;
     emitVideo('video:pause', video.currentTime);
   });
@@ -741,8 +754,8 @@ function buildVimeoPlayer(id, initialVideoState) {
     playerFrame.classList.add('crop');
     addShield(holder);
     player.on('timeupdate', (d) => { vimeoTime = d.seconds; vimeoDuration = d.duration; });
-    player.on('play', (d) => { vimeoPlaying = true; if (canControl && !applyingRemote) emitVideo('video:play', d.seconds); });
-    player.on('pause', (d) => { vimeoPlaying = false; if (canControl && !applyingRemote) emitVideo('video:pause', d.seconds); });
+    player.on('play', (d) => { vimeoPlaying = true; enforceRoomState(true); if (canControl && !applyingRemote) emitVideo('video:play', d.seconds); });
+    player.on('pause', (d) => { vimeoPlaying = false; enforceRoomState(false); if (canControl && !applyingRemote) emitVideo('video:pause', d.seconds); });
     player.on('seeked', (d) => { if (canControl && !applyingRemote) emitVideo('video:seek', d.seconds); });
     player.ready().then(() => {
       if (vimeoPlayer !== player) return;
@@ -775,6 +788,7 @@ function buildEmbedPlayer(parsed) {
 }
 
 function setSource(video) {
+  loadedSourceUrl = video.url || '';
   const parsed = parseVideoUrl(video.url);
   if (parsed.type === 'none') {
     destroyPlayer();
@@ -835,6 +849,7 @@ function updateShareButtonUi() {
 
 // Common part of screen share and file share: show the local preview and announce the stream.
 function beginSharing(stream, localVideo, hint) {
+  loadedSourceUrl = null;
   stopViewerStream();
   screenStream = stream;
   isSharing = true;
@@ -924,6 +939,7 @@ shareScreenBtn.addEventListener('click', () => {
 });
 
 function watchScreenShare(username) {
+  loadedSourceUrl = null;
   currentSharerUsername = username || null;
   destroyPlayer();
   currentSourceType = 'screen';
@@ -1033,6 +1049,28 @@ function applyRemoteVideoState(video, isInitial) {
   setTimeout(() => { applyingRemote = false; }, 400);
 }
 
+// Only the owner/admins control playback. If a viewer's player plays or pauses on its own
+// (keyboard media keys, Windows/phone media controls, …) and no longer matches the room, put it
+// straight back instead of waiting for the next 2s sync. Throttled so a browser that refuses to
+// play can't cause a loop (ensurePlaying() then falls back to muted playback).
+let lastEnforceAt = 0;
+function enforceRoomState(playerIsPlaying) {
+  if (canControl || applyingRemote || !lastVideoState) return;
+  if (playerIsPlaying === !!lastVideoState.playing) return;
+  const now = Date.now();
+  if (now - lastEnforceAt < 1000) return;
+  lastEnforceAt = now;
+  applyRemoteVideoState(lastVideoState, false);
+}
+
+// Media keys / OS media controls act on this page's own <video>; viewers get no-op handlers.
+function updateMediaKeys() {
+  if (!('mediaSession' in navigator)) return;
+  for (const action of ['play', 'pause', 'stop', 'seekbackward', 'seekforward', 'seekto', 'previoustrack', 'nexttrack']) {
+    try { navigator.mediaSession.setActionHandler(action, canControl ? null : () => {}); } catch {}
+  }
+}
+
 // If the browser blocked autoplay with sound, fall back to muted playback so the viewer at least
 // stays in sync; one click on the speaker button turns sound back on.
 function ensurePlaying() {
@@ -1078,7 +1116,7 @@ setInterval(() => {
 
 // Background tabs throttle timers and players; resync as soon as the tab is visible again.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && lastVideoState) applyRemoteVideoState(lastVideoState, false);
+  if (!document.hidden && lastVideoState && !canControl) applyRemoteVideoState(lastVideoState, false);
 });
 
 // ---------- Socket ----------
@@ -1100,6 +1138,7 @@ socket.on('room:error', (code) => {
 });
 
 function updateControlUi() {
+  updateMediaKeys();
   document.getElementById('ownerBar').classList.toggle('hidden', !canControl);
   syncHint.textContent = canControl
     ? (isOwner ? 'შენ ხარ მფლობელი.' : 'შენ ხარ ადმინი.')
@@ -1117,10 +1156,15 @@ socket.on('room:init', (data) => {
   document.title = data.roomName + ' — Watch Together';
   updateControlUi();
   renderParticipants(data.participants);
+  document.getElementById('chatMessages').innerHTML = '';
   data.chat.forEach(renderChatMessage);
   scrollChatToBottom();
   lastVideoState = data.video;
-  if (data.screenSharer) {
+  const samePlayer = !data.screenSharer && loadedSourceUrl !== null && loadedSourceUrl === (data.video.url || '')
+    && !['none', 'screen'].includes(currentSourceType);
+  if (samePlayer) {
+    if (!canControl) applyRemoteVideoState(data.video, false);
+  } else if (data.screenSharer) {
     currentSharerSocketId = data.screenSharer.socketId;
     watchScreenShare(data.screenSharer.username);
   } else {
