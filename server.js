@@ -13,7 +13,8 @@ const compression = require('compression');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const DATABASE_URL = process.env.DATABASE_URL || '';
-// Render sets RENDER=true; there the site is served over https, so cookies get the Secure flag.
+// Render sets RENDER=true and the Dockerfile (Northflank) sets NODE_ENV=production; both serve over
+// https, so cookies get the Secure flag.
 const IS_PROD = !!process.env.RENDER || process.env.NODE_ENV === 'production';
 const COOKIE_FLAGS = `HttpOnly; Path=/; SameSite=Lax${IS_PROD ? '; Secure' : ''}`;
 
@@ -96,7 +97,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET
   || (GOOGLE_CLIENT_SECRET && crypto.createHash('sha256').update('watch-together-session:' + GOOGLE_CLIENT_SECRET).digest('hex'))
   || localSessionSecret();
 if (IS_PROD && !process.env.SESSION_SECRET && !GOOGLE_CLIENT_SECRET) {
-  console.warn('SESSION_SECRET is not set: logins will not survive a redeploy. Add it in Render > Environment.');
+  console.warn('SESSION_SECRET is not set: logins will not survive a redeploy. Add it in the hosting environment settings (Render/Northflank).');
 }
 
 function localSessionSecret() {
